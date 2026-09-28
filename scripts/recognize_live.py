@@ -48,7 +48,10 @@ def main() -> int:
     detector = build_detector(args)
     recognizer = build_recognizer(args)
     model_path = Path(args.model) if args.model else default_model_path(recognizer.name)
-    recognizer.load(model_path)
+    try:
+        recognizer.load(model_path)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"\n{exc}\n")
 
     banner("Face Track: live recognition")
     print(f"detector   : {detector.describe()}")

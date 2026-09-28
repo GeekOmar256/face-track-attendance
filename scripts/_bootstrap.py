@@ -77,19 +77,24 @@ def add_recognizer_args(parser: argparse.ArgumentParser, default: str = "lbph") 
 def build_detector(args: argparse.Namespace, detector_name: str = None):
     """Create the detector named on the command line, passing only its own options."""
     name = detector_name or args.detector
-    if name == "haar":
+    try:
+        if name == "haar":
+            return get_detector(
+                "haar",
+                scale_factor=getattr(args, "scale_factor", config.HAAR_SCALE_FACTOR),
+                min_neighbors=getattr(args, "min_neighbors", config.HAAR_MIN_NEIGHBORS),
+                min_size=(getattr(args, "min_size", config.HAAR_MIN_SIZE[0]),) * 2,
+            )
         return get_detector(
-            "haar",
-            scale_factor=getattr(args, "scale_factor", config.HAAR_SCALE_FACTOR),
-            min_neighbors=getattr(args, "min_neighbors", config.HAAR_MIN_NEIGHBORS),
-            min_size=(getattr(args, "min_size", config.HAAR_MIN_SIZE[0]),) * 2,
+            "yunet",
+            score_threshold=getattr(args, "score_threshold", config.YUNET_SCORE_THRESHOLD),
+            input_size=(getattr(args, "width", config.FRAME_WIDTH),
+                        getattr(args, "height", config.FRAME_HEIGHT)),
         )
-    return get_detector(
-        "yunet",
-        score_threshold=getattr(args, "score_threshold", config.YUNET_SCORE_THRESHOLD),
-        input_size=(getattr(args, "width", config.FRAME_WIDTH),
-                    getattr(args, "height", config.FRAME_HEIGHT)),
-    )
+    except (FileNotFoundError, RuntimeError) as exc:
+        # A missing model file is an ordinary setup step, not a crash worth a
+        # traceback. SystemExit prints the message on its own.
+        raise SystemExit(f"\n{exc}\n")
 
 
 def build_recognizer(args: argparse.Namespace, recognizer_name: str = None):
@@ -98,7 +103,10 @@ def build_recognizer(args: argparse.Namespace, recognizer_name: str = None):
     threshold = getattr(args, "threshold", None)
     if threshold is not None:
         kwargs["threshold"] = threshold
-    return get_recognizer(name, **kwargs)
+    try:
+        return get_recognizer(name, **kwargs)
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise SystemExit(f"\n{exc}\n")
 
 
 def build_camera(args: argparse.Namespace):
