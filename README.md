@@ -29,6 +29,39 @@ YuNet detector and the SFace recognizer, fetch the two ONNX models once:
 python scripts/download_models.py
 ```
 
+## The interface
+
+The quickest way to use any of this is the web interface. It runs detection and
+recognition over a **webcam, a video file, or photographs**, and shows the
+statistics live.
+
+```bash
+python scripts/run_web.py
+```
+
+It prints two addresses: one for this machine, one for the local Wi-Fi. Open
+the Wi-Fi one on a laptop or a phone to watch the Raspberry Pi work.
+
+It is built on Python's own `http.server`, so it adds **no dependency at all**,
+and it needs **no display on the Pi**. A headless board with no desktop
+installed can serve it, and the video travels as JPEG frames over HTTP rather
+than as X11 traffic forwarded through SSH. That is both lighter and much
+faster than forwarding a window.
+
+The page lets you pick the source, switch between Haar and YuNet, turn
+recognition on with either recognizer, tune the detector parameters, upload a
+video or photo to the board, take a snapshot, and export the session
+statistics as CSV.
+
+There is also a desktop window with the same features:
+
+```bash
+python scripts/run_gui.py          # needs python3-tk on the Pi
+```
+
+Prefer the web interface on the Raspberry Pi. The window needs a display, which
+on a headless board means installing an X stack and forwarding it over SSH.
+
 ## The four steps
 
 ### 1. Detection (the baseline)
@@ -105,7 +138,10 @@ facetrack/
   utils.py         timing, sharpness, dataset listing, table output
   detectors/       haar.py, yunet.py behind base.py
   recognizers/     lbph.py, sface.py behind base.py
-scripts/           the seven command line entry points
+  gui.py           desktop window (Tkinter)
+  webapp.py        browser interface (http.server, no dependency)
+  session.py       the running pipeline and its statistics, shared by both
+scripts/           the nine command line entry points
 data/
   dataset/<id>_<name>/*.jpg
   models/*.onnx

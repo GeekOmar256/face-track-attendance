@@ -5,3 +5,8 @@
 # same environment causes hard to diagnose import clashes.
 opencv-contrib-python>=4.7
 numpy>=1.24
+
+# The web interface (scripts/run_web.py) uses Python's own http.server and needs
+# nothing extra. The desktop window (scripts/run_gui.py) needs tkinter, which is
+# part of the standard Windows and macOS Python installers; on Debian and
+# Raspberry Pi OS install it with:  sudo apt install python3-tk

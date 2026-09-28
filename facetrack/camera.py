@@ -63,6 +63,11 @@ class CameraSource:
             if not self._images:
                 raise ValueError(f"no images found under {path}")
             self.kind = "images"
+        elif path.suffix.lower() in config.IMAGE_EXTENSIONS:
+            # A single photo. Handled as a one frame sequence rather than through
+            # VideoCapture, so the GUI can tell a finished photo from a dead camera.
+            self._images = [path]
+            self.kind = "image"
         else:
             self._capture = cv2.VideoCapture(str(path))
             if not self._capture.isOpened():

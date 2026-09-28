@@ -12,3 +12,8 @@
 # here, because pip installing it separately tends to fight the system package.
 opencv-contrib-python>=4.7
 numpy>=1.24
+
+# For the browser interface nothing further is needed, and no display is
+# required: run  python scripts/run_web.py  and open the address it prints from
+# a laptop or phone on the same Wi-Fi.
+# Only if you want the desktop window instead:  sudo apt install python3-tk
