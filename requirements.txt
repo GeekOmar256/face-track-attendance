@@ -1,0 +1,7 @@
+# Development machine (laptop).
+# opencv-contrib-python carries both the Haar cascades and the cv2.face module
+# that LBPH needs, plus FaceDetectorYN and FaceRecognizerSF for the DNN models.
+# Install ONLY this one, not opencv-python as well: having both installed in the
+# same environment causes hard to diagnose import clashes.
+opencv-contrib-python>=4.7
+numpy>=1.24
