@@ -1,4 +1,7 @@
-# Face Track — detection and recognition pipeline
+# Face Track — version 2
+
+*Version 1 is the baseline in [../version1/](../version1/). This version adds
+enrolment from the browser and a light theme.*
 
 FYP2, Team 10, Kuwait College of Science and Technology.
 *Face Track: An Embedded Smart Attendance System Using Face Recognition.*
@@ -48,10 +51,27 @@ installed can serve it, and the video travels as JPEG frames over HTTP rather
 than as X11 traffic forwarded through SSH. That is both lighter and much
 faster than forwarding a window.
 
-The page lets you pick the source, switch between Haar and YuNet, turn
-recognition on with either recognizer, tune the detector parameters, upload a
-video or photo to the board, take a snapshot, and export the session
-statistics as CSV.
+The page has two tabs.
+
+**Recognize** — pick the source, switch between Haar and YuNet, turn recognition
+on with either recognizer, tune the detector parameters, upload a video or photo
+to the board, take a snapshot, and export the session statistics as CSV.
+
+**Add a face** — enrol someone without touching a terminal:
+
+1. Fill in their details: student ID and full name are required, and email,
+   programme, section and notes are optional. They are saved to a `person.json`
+   beside the images, so the system keeps a real record of the person rather
+   than parsing their folder name.
+2. Press **Start capture**. The camera preview shows the detection box and a
+   progress bar. An image is kept only when exactly one face is visible and the
+   crop is sharp enough, with a gap between saves, so the set is varied rather
+   than a burst of near identical frames.
+3. Press **Train now** at the bottom of the same tab, then go back to Recognize
+   and press Start. A new person is only recognised once the model is rebuilt.
+
+The tab also lists everyone enrolled, with their details, image counts and a
+remove button. `#enroll` on the end of the address opens that tab directly.
 
 There is also a desktop window with the same features:
 

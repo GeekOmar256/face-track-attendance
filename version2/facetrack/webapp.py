@@ -9,6 +9,9 @@ over the local network.
 It also means no display is needed on the Pi itself. A headless board with no
 desktop installed can serve this page, and the video arrives as JPEG frames
 over HTTP rather than as X11 traffic forwarded through SSH.
+
+Version 2 adds the second tab: enrolling a new person with their details, and
+retraining a recognizer, without leaving the browser.
 """
 
 from __future__ import annotations
@@ -17,7 +20,6 @@ import csv
 import io
 import json
 import socket
-
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,9 +27,11 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from . import config
-from .detectors import DETECTOR_NAMES
+from .detectors import DETECTOR_NAMES, get_detector
+from .enrollment import DETAIL_FIELDS, EnrollmentSession, delete_person, list_people
 from .recognizers import RECOGNIZER_NAMES, default_model_path
 from .session import PipelineSession
+from .training import TrainingJob
 
 BOUNDARY = "facetrackframe"
 UPLOAD_DIR = config.DATA_DIR / "uploads"
@@ -43,124 +47,173 @@ PAGE = """<!doctype html>
 <title>Face Track</title>
 <style>
   :root {
-    --bg:#11141a; --panel:#1a1f28; --line:#2b323e; --text:#e8ecf2;
-    --muted:#98a2b3; --accent:#3da9fc; --ok:#35c26a; --bad:#ef4b4b; --warn:#f0a132;
+    --bg:#f4f7fb; --panel:#ffffff; --soft:#f7f9fc; --line:#e2e8f2;
+    --text:#26344a; --muted:#7b8aa3;
+    --accent:#4c7ef3; --accent-soft:#e9f0ff; --accent-deep:#2f5fd0;
+    --ok:#1f9d55; --ok-soft:#e4f6ea;
+    --bad:#dc5563; --bad-soft:#fdecee;
+    --warn:#dd8c1f; --warn-soft:#fdf2e2;
+    --shadow:0 1px 2px rgba(38,52,74,.06), 0 6px 18px rgba(38,52,74,.06);
   }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text);
-         font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
-  header { padding:14px 16px; border-bottom:1px solid var(--line);
-           display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
-  header h1 { margin:0; font-size:17px; letter-spacing:.2px; }
-  header span { color:var(--muted); font-size:12px; }
-  .wrap { display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:16px; padding:16px; }
-  .wrap > * { min-width:0; }
+         font:14px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
   img { max-width:100%; }
-  @media (max-width:900px) { .wrap { grid-template-columns:1fr; padding:12px; } }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
-          padding:14px; min-width:0; overflow:hidden; }
-  .card h2 { margin:0 0 10px; font-size:12px; text-transform:uppercase;
-             letter-spacing:.8px; color:var(--muted); font-weight:600; }
-  .viewbox { position:relative; background:#000; border-radius:8px; overflow:hidden;
-             min-height:360px; max-height:70vh; display:flex;
-             align-items:center; justify-content:center; }
-  /* max-width/max-height rather than 100% plus object-fit: this letterboxes a
-     tall portrait frame reliably, whatever the source aspect ratio is.
-     min-width:0 is needed because a flex item otherwise refuses to shrink below
-     its natural width, which overflows the card on a phone. */
-  #view { max-width:100%; max-height:70vh; width:auto; height:auto;
+
+  header { background:var(--panel); border-bottom:1px solid var(--line);
+           padding:12px 18px 0; }
+  .brand { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .brand h1 { margin:0; font-size:18px; letter-spacing:-.2px; }
+  .brand span { color:var(--muted); font-size:12.5px; }
+  .brand .state { margin-left:auto; }
+
+  .tabs { display:flex; gap:4px; margin-top:12px; }
+  .tabs button { border:0; background:none; padding:9px 16px; cursor:pointer;
+                 font:inherit; font-weight:600; color:var(--muted);
+                 border-radius:9px 9px 0 0; border-bottom:2.5px solid transparent; }
+  .tabs button:hover { color:var(--text); background:var(--soft); }
+  .tabs button.active { color:var(--accent-deep); border-bottom-color:var(--accent);
+                        background:var(--accent-soft); }
+
+  .wrap { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; padding:16px; }
+  .wrap > * { min-width:0; }
+  @media (max-width:920px) { .wrap { grid-template-columns:1fr; padding:12px; } }
+
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+          padding:15px; min-width:0; overflow:hidden; box-shadow:var(--shadow); }
+  .card + .card { margin-top:16px; }
+  .card h2 { margin:0 0 11px; font-size:11.5px; text-transform:uppercase;
+             letter-spacing:.7px; color:var(--muted); font-weight:700; }
+
+  .viewbox { position:relative; background:#eef2f8; border:1px solid var(--line);
+             border-radius:10px; overflow:hidden; min-height:340px; max-height:68vh;
+             display:flex; align-items:center; justify-content:center; }
+  .view { max-width:100%; max-height:68vh; width:auto; height:auto;
           display:block; min-width:0; }
-  #view:not([src]) { visibility:hidden; }
-  #placeholder { position:absolute; color:var(--muted); font-size:13px; }
-  label { display:block; margin:8px 0 3px; font-size:12px; color:var(--muted); }
-  select, input[type=text], input[type=number], input[type=file] {
-    width:100%; padding:7px 8px; background:#131820; color:var(--text);
-    border:1px solid var(--line); border-radius:6px; font-size:13px; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; } .row > * { flex:1 1 120px; min-width:0; }
-  .radios { display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
-  .radios label { display:flex; align-items:center; gap:5px; margin:0;
-                  padding:6px 9px; background:#131820; border:1px solid var(--line);
-                  border-radius:6px; cursor:pointer; color:var(--text); font-size:13px; }
-  .radios input { accent-color:var(--accent); }
-  button { width:100%; padding:9px; margin-top:10px; border:0; border-radius:7px;
-           background:var(--accent); color:#04121f; font-weight:700; cursor:pointer;
-           font-size:13px; }
-  button.ghost { background:#222a36; color:var(--text); font-weight:600; }
-  button:disabled { opacity:.45; cursor:not-allowed; }
+  .view:not([src]) { visibility:hidden; }
+  .placeholder { position:absolute; color:var(--muted); font-size:13px; }
+
+  label { display:block; margin:9px 0 3px; font-size:12px; color:var(--muted);
+          font-weight:600; }
+  input[type=text], input[type=number], input[type=email], select, textarea, input[type=file] {
+    width:100%; padding:8px 10px; background:var(--panel); color:var(--text);
+    border:1px solid var(--line); border-radius:8px; font:inherit; font-size:13px; }
+  input:focus, select:focus, textarea:focus { outline:2px solid var(--accent-soft);
+    border-color:var(--accent); }
+  textarea { resize:vertical; min-height:54px; }
+  .req::after { content:" *"; color:var(--bad); }
+  .row { display:flex; gap:9px; flex-wrap:wrap; } .row > * { flex:1 1 130px; min-width:0; }
+
+  .chips { display:flex; gap:7px; flex-wrap:wrap; margin-top:4px; }
+  .chips label { display:flex; align-items:center; gap:6px; margin:0; padding:7px 11px;
+                 background:var(--soft); border:1px solid var(--line); border-radius:8px;
+                 cursor:pointer; color:var(--text); font-size:13px; font-weight:500; }
+  .chips label:has(input:checked) { background:var(--accent-soft);
+                                    border-color:var(--accent); color:var(--accent-deep); }
+  .chips input { accent-color:var(--accent); }
+
+  button.btn { width:100%; padding:10px; margin-top:11px; border:0; border-radius:9px;
+               background:var(--accent); color:#fff; font-weight:700; cursor:pointer;
+               font-size:13.5px; font-family:inherit; }
+  button.btn:hover:not(:disabled) { background:var(--accent-deep); }
+  button.ghost { background:var(--soft); color:var(--text); font-weight:600;
+                 border:1px solid var(--line); }
+  button.ghost:hover:not(:disabled) { background:var(--accent-soft); border-color:var(--accent); }
+  button.btn:disabled { opacity:.5; cursor:not-allowed; }
+
   .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
-  @media (max-width:620px) { .grid { grid-template-columns:repeat(2,1fr); } }
-  .stat { background:#131820; border:1px solid var(--line); border-radius:8px; padding:9px 10px; }
-  .stat .k { font-size:11px; color:var(--muted); }
-  .stat .v { font-size:18px; font-weight:700; margin-top:2px; }
-  table { width:100%; border-collapse:collapse; margin-top:6px; font-size:13px; }
-  th { text-align:left; color:var(--muted); font-weight:600; font-size:11px;
-       text-transform:uppercase; letter-spacing:.5px; padding:4px 6px; }
-  td { padding:5px 6px; border-top:1px solid var(--line); }
-  .pill { padding:2px 8px; border-radius:99px; font-size:11px; font-weight:700; }
-  .ok { background:rgba(53,194,106,.15); color:var(--ok); }
-  .bad { background:rgba(239,75,75,.15); color:var(--bad); }
+  @media (max-width:640px) { .grid { grid-template-columns:repeat(2,1fr); } }
+  .stat { background:var(--soft); border:1px solid var(--line); border-radius:10px;
+          padding:10px 12px; }
+  .stat .k { font-size:11px; color:var(--muted); font-weight:600; }
+  .stat .v { font-size:19px; font-weight:700; margin-top:2px; letter-spacing:-.3px; }
+
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--muted); font-weight:700; font-size:10.5px;
+       text-transform:uppercase; letter-spacing:.5px; padding:5px 7px; }
+  td { padding:7px; border-top:1px solid var(--line); }
+  tbody tr:hover { background:var(--soft); }
+
+  .pill { padding:3px 10px; border-radius:99px; font-size:11px; font-weight:700; }
+  .ok { background:var(--ok-soft); color:var(--ok); }
+  .bad { background:var(--bad-soft); color:var(--bad); }
+  .idle { background:var(--soft); color:var(--muted); }
   .muted { color:var(--muted); }
-  #msg { margin-top:10px; font-size:12px; min-height:1.4em; }
+  .msg { margin-top:10px; font-size:12.5px; min-height:1.4em; color:var(--muted); }
+  .msg.err { color:var(--bad); } .msg.good { color:var(--ok); }
   .hide { display:none !important; }
+
+  .bar { height:9px; background:var(--soft); border:1px solid var(--line);
+         border-radius:99px; overflow:hidden; margin-top:9px; }
+  .bar i { display:block; height:100%; width:0; background:var(--accent);
+           transition:width .25s ease; }
+  .linkbtn { border:0; background:none; color:var(--bad); cursor:pointer;
+             font:inherit; font-size:12px; font-weight:600; padding:2px 4px; }
+  .linkbtn:hover { text-decoration:underline; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Face Track</h1>
-  <span>detection and recognition &middot; FYP2</span>
-  <span id="state" style="margin-left:auto"></span>
+  <div class="brand">
+    <h1>Face Track</h1>
+    <span>detection and recognition &middot; FYP2 &middot; version 2</span>
+    <span class="state" id="state"></span>
+  </div>
+  <nav class="tabs">
+    <button data-tab="recognize" class="active">Recognize</button>
+    <button data-tab="enroll">Add a face</button>
+  </nav>
 </header>
 
-<div class="wrap">
+<!-- ===================================================== recognize -->
+<div class="wrap" id="tab-recognize">
   <div>
     <div class="card">
       <h2>Preview</h2>
       <div class="viewbox">
-        <div id="placeholder">not running</div>
-        <img id="view" alt="">
+        <div class="placeholder" id="phR">not running</div>
+        <img class="view" id="viewR" alt="">
       </div>
-      <div class="row" style="margin-top:8px">
-        <button class="ghost" id="snap">Save snapshot</button>
-        <button class="ghost" id="reset">Reset statistics</button>
-        <button class="ghost" id="csv">Export CSV</button>
+      <div class="row" style="margin-top:9px">
+        <button class="btn ghost" id="snap">Save snapshot</button>
+        <button class="btn ghost" id="reset">Reset statistics</button>
+        <button class="btn ghost" id="csv">Export CSV</button>
       </div>
     </div>
 
-    <div class="card" style="margin-top:16px">
+    <div class="card">
       <h2>Statistics</h2>
       <div class="grid" id="stats"></div>
-      <table>
+      <table style="margin-top:10px">
         <thead><tr><th>Identified</th><th>ID</th><th>Frames</th><th>Share</th></tr></thead>
         <tbody id="people"><tr><td colspan="4" class="muted">nothing yet</td></tr></tbody>
       </table>
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" style="align-self:start">
     <h2>Source</h2>
-    <div class="radios" id="srcKind">
+    <div class="chips" id="srcKind">
       <label><input type="radio" name="src" value="camera" checked> Camera</label>
       <label><input type="radio" name="src" value="video"> Video</label>
       <label><input type="radio" name="src" value="photos"> Photos</label>
     </div>
-
     <div id="cameraBox">
       <label>Camera index</label>
       <input type="number" id="cameraIndex" value="0" min="0" max="8">
     </div>
-
     <div id="fileBox" class="hide">
       <label>Upload a file to the server</label>
       <input type="file" id="upload">
       <label>Or a path already on the server</label>
       <select id="serverFile"></select>
-      <label style="display:flex;align-items:center;gap:6px;margin-top:8px">
+      <label style="display:flex;align-items:center;gap:7px;margin-top:9px;font-weight:500">
         <input type="checkbox" id="loop" style="width:auto"> Loop when it ends
       </label>
     </div>
 
-    <h2 style="margin-top:16px">Detection</h2>
-    <div class="radios" id="detKind">
+    <h2 style="margin-top:17px">Detection</h2>
+    <div class="chips" id="detKind">
       <label><input type="radio" name="det" value="haar" checked> Haar</label>
       <label><input type="radio" name="det" value="yunet"> YuNet</label>
     </div>
@@ -177,31 +230,144 @@ PAGE = """<!doctype html>
       <input type="number" id="scoreThreshold" value="0.9" step="0.05" min="0.05" max="1">
     </div>
 
-    <h2 style="margin-top:16px">Recognition</h2>
-    <select id="recognizer">
-      <option value="none">Off, detection only</option>
-    </select>
-    <label>Threshold <span class="muted">(blank uses config.py)</span></label>
+    <h2 style="margin-top:17px">Recognition</h2>
+    <select id="recognizer"><option value="none">Off, detection only</option></select>
+    <label>Threshold <span class="muted" style="font-weight:400">(blank uses config.py)</span></label>
     <input type="text" id="threshold" placeholder="default">
 
-    <button id="start">Start</button>
-    <button id="stop" class="ghost" disabled>Stop</button>
-    <div id="msg" class="muted"></div>
+    <button class="btn" id="start">Start</button>
+    <button class="btn ghost" id="stop" disabled>Stop</button>
+    <div class="msg" id="msg"></div>
+  </div>
+</div>
+
+<!-- ======================================================== enroll -->
+<div class="wrap hide" id="tab-enroll">
+  <div>
+    <div class="card">
+      <h2>Capture</h2>
+      <div class="viewbox">
+        <div class="placeholder" id="phE">press Start capture when ready</div>
+        <img class="view" id="viewE" alt="">
+      </div>
+      <div class="bar"><i id="progbar"></i></div>
+      <div class="msg" id="emsg"></div>
+    </div>
+
+    <div class="card">
+      <h2>Enrolled people</h2>
+      <table>
+        <thead><tr><th>Name</th><th>ID</th><th>Programme</th><th>Section</th>
+                   <th>Images</th><th>Enrolled</th><th></th></tr></thead>
+        <tbody id="peopleList"><tr><td colspan="7" class="muted">nobody enrolled yet</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Train the recognizer</h2>
+      <p class="muted" style="margin:0 0 4px;font-size:12.5px">
+        A new person is only recognised after the model is rebuilt. Retrain here,
+        then press Start on the Recognize tab to load it.</p>
+      <div class="row">
+        <div><label>Recognizer</label><select id="trainRec"></select></div>
+        <div><label>Detector</label>
+          <select id="trainDet"><option value="haar">Haar</option><option value="yunet">YuNet</option></select></div>
+      </div>
+      <button class="btn" id="train">Train now</button>
+      <div class="msg" id="tmsg"></div>
+      <table id="trainTable" class="hide" style="margin-top:8px">
+        <thead><tr><th>Person</th><th>Images</th><th>Faces found</th><th>Rate</th></tr></thead>
+        <tbody id="trainRows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" style="align-self:start">
+    <h2>Person details</h2>
+    <label class="req">Student ID</label>
+    <input type="text" id="f_student_id" placeholder="e.g. 210001">
+    <label class="req">Full name</label>
+    <input type="text" id="f_name" placeholder="e.g. Student Name">
+    <label>Email</label>
+    <input type="email" id="f_email" placeholder="e.g. 210001@student.kcst.edu.kw">
+    <div class="row">
+      <div><label>Programme</label><input type="text" id="f_programme" placeholder="e.g. Computer Engineering"></div>
+      <div><label>Section</label><input type="text" id="f_section" placeholder="e.g. CE 492 - A"></div>
+    </div>
+    <label>Notes</label>
+    <textarea id="f_notes" placeholder="anything worth recording"></textarea>
+
+    <h2 style="margin-top:17px">Capture settings</h2>
+    <div class="row">
+      <div><label>Images to capture</label><input type="number" id="e_count" value="30" min="5" max="200"></div>
+      <div><label>Camera index</label><input type="number" id="e_camera" value="0" min="0" max="8"></div>
+    </div>
+    <label>Detector</label>
+    <div class="chips" id="eDetKind">
+      <label><input type="radio" name="edet" value="haar" checked> Haar</label>
+      <label><input type="radio" name="edet" value="yunet"> YuNet</label>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <div><label>Sharpness floor</label><input type="number" id="e_blur" value="60" min="0" step="5"></div>
+      <div><label>Frame gap</label><input type="number" id="e_gap" value="5" min="1"></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:7px;margin-top:10px;font-weight:500">
+      <input type="checkbox" id="e_replace" style="width:auto"> Replace this person's existing images
+    </label>
+
+    <button class="btn" id="estart">Start capture</button>
+    <button class="btn ghost" id="estop" disabled>Stop</button>
   </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
-const msg = (t, bad) => { $("msg").textContent = t || ""; $("msg").style.color = bad ? "var(--bad)" : "var(--muted)"; };
-let running = false;
+const setMsg = (el, t, kind) => { const e = $(el); e.textContent = t || "";
+  e.className = "msg" + (kind ? " " + kind : ""); };
+let running = false, enrolling = false, activeTab = "recognize";
 
+/* ------------------------------------------------------------- tabs */
+function showTab(name) {
+  activeTab = (name === "enroll") ? "enroll" : "recognize";
+  document.querySelectorAll(".tabs button").forEach(x =>
+    x.classList.toggle("active", x.dataset.tab === activeTab));
+  $("tab-recognize").classList.toggle("hide", activeTab !== "recognize");
+  $("tab-enroll").classList.toggle("hide", activeTab !== "enroll");
+  syncStreams();
+  if (activeTab === "enroll") loadPeople();
+}
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => {
+  history.replaceState(null, "", "#" + b.dataset.tab);
+  showTab(b.dataset.tab);
+});
+// #enroll in the address opens that tab directly, so a tab can be bookmarked.
+window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+showTab(location.hash.slice(1));
+
+/* ---------------------------------------------------------- streams */
+function syncStreams() {
+  const live = running || enrolling;
+  const wantR = activeTab === "recognize" && live;
+  const wantE = activeTab === "enroll" && live;
+  [["viewR", wantR, "phR"], ["viewE", wantE, "phE"]].forEach(([id, want, ph]) => {
+    const img = $(id);
+    if (want && !img.getAttribute("src")) { img.src = "stream.mjpg?t=" + Date.now(); $(ph).textContent = ""; }
+    if (!want && img.getAttribute("src")) { img.removeAttribute("src"); }
+  });
+}
+function clearStreams(label) {
+  ["viewR", "viewE"].forEach(id => $(id).removeAttribute("src"));
+  $("phR").textContent = label; $("phE").textContent = label;
+}
+
+/* --------------------------------------------------------- recognize */
 function sourceKind() { return document.querySelector('input[name=src]:checked').value; }
 function detKind()    { return document.querySelector('input[name=det]:checked').value; }
 
 $("srcKind").onchange = () => {
-  const camera = sourceKind() === "camera";
-  $("cameraBox").classList.toggle("hide", !camera);
-  $("fileBox").classList.toggle("hide", camera);
+  const cam = sourceKind() === "camera";
+  $("cameraBox").classList.toggle("hide", !cam);
+  $("fileBox").classList.toggle("hide", cam);
   loadFiles();
 };
 $("detKind").onchange = () => {
@@ -212,17 +378,19 @@ $("detKind").onchange = () => {
 
 async function loadConfig() {
   const cfg = await (await fetch("api/config")).json();
-  const sel = $("recognizer");
+  const sel = $("recognizer"), tsel = $("trainRec");
   sel.innerHTML = '<option value="none">Off, detection only</option>';
+  tsel.innerHTML = "";
   for (const r of cfg.recognizers) {
     const o = document.createElement("option");
-    o.value = r.name;
-    o.textContent = r.label + (r.trained ? "" : "  (not trained yet)");
-    o.disabled = !r.trained;
-    sel.appendChild(o);
+    o.value = r.name; o.textContent = r.label + (r.trained ? "" : "  (not trained yet)");
+    o.disabled = !r.trained; sel.appendChild(o);
+    const t = document.createElement("option");
+    t.value = r.name; t.textContent = r.label; tsel.appendChild(t);
   }
   if (!cfg.yunet_available) {
-    document.querySelector('input[name=det][value=yunet]').disabled = true;
+    document.querySelectorAll('input[value=yunet]').forEach(e => e.disabled = true);
+    $("trainDet").querySelector('option[value=yunet]').disabled = true;
   }
   loadFiles();
 }
@@ -230,33 +398,29 @@ async function loadConfig() {
 async function loadFiles() {
   const files = await (await fetch("api/files")).json();
   const sel = $("serverFile");
-  const kind = sourceKind();
-  const list = kind === "video" ? files.videos : files.photos;
+  const list = sourceKind() === "video" ? files.videos : files.photos;
   sel.innerHTML = '<option value="">-- choose --</option>';
   for (const f of list) {
     const o = document.createElement("option");
-    o.value = f.path; o.textContent = f.label;
-    sel.appendChild(o);
+    o.value = f.path; o.textContent = f.label; sel.appendChild(o);
   }
 }
 
 $("upload").onchange = async e => {
   const file = e.target.files[0];
   if (!file) return;
-  msg("uploading " + file.name + " ...");
+  setMsg("msg", "uploading " + file.name + " ...");
   const res = await fetch("api/upload?name=" + encodeURIComponent(file.name),
                           { method: "POST", body: file });
   const out = await res.json();
-  if (!res.ok) { msg(out.error || "upload failed", true); return; }
-  msg("uploaded " + out.name);
-  await loadFiles();
-  $("serverFile").value = out.path;
+  if (!res.ok) { setMsg("msg", out.error || "upload failed", "err"); return; }
+  setMsg("msg", "uploaded " + out.name, "good");
+  await loadFiles(); $("serverFile").value = out.path;
 };
 
 $("start").onclick = async () => {
   const body = {
-    detector: detKind(),
-    recognizer: $("recognizer").value,
+    detector: detKind(), recognizer: $("recognizer").value,
     threshold: $("threshold").value.trim() || null,
     scale_factor: parseFloat($("scaleFactor").value),
     min_neighbors: parseInt($("minNeighbors").value),
@@ -264,50 +428,127 @@ $("start").onclick = async () => {
     score_threshold: parseFloat($("scoreThreshold").value),
     loop: $("loop").checked
   };
-  if (sourceKind() === "camera") {
-    body.camera_index = parseInt($("cameraIndex").value);
-  } else {
+  if (sourceKind() === "camera") body.camera_index = parseInt($("cameraIndex").value);
+  else {
     body.source = $("serverFile").value;
-    if (!body.source) { msg("choose or upload a file first", true); return; }
+    if (!body.source) { setMsg("msg", "choose or upload a file first", "err"); return; }
   }
-  msg("starting ...");
+  setMsg("msg", "starting ...");
   const res = await fetch("api/start", { method:"POST", body: JSON.stringify(body) });
   const out = await res.json();
-  if (!res.ok) { msg(out.error || "could not start", true); return; }
-  msg(out.detector_description || "running");
-  attachStream();
+  if (!res.ok) { setMsg("msg", out.error || "could not start", "err"); return; }
+  setMsg("msg", out.detector_description || "running");
+  running = true; $("start").disabled = true; $("stop").disabled = false; syncStreams();
 };
-
-function attachStream() {
-  $("view").src = "stream.mjpg?t=" + Date.now();
-  $("placeholder").textContent = "";
-  running = true; $("start").disabled = true; $("stop").disabled = false;
-}
-
-function detachStream(label) {
-  $("view").removeAttribute("src");
-  $("placeholder").textContent = label;
-  running = false; $("start").disabled = false; $("stop").disabled = true;
-}
 
 $("stop").onclick = async () => {
   await fetch("api/stop", { method:"POST" });
-  detachStream("stopped");
-  msg("stopped, statistics kept");
+  running = false; $("start").disabled = false; $("stop").disabled = true;
+  clearStreams("stopped"); setMsg("msg", "stopped, statistics kept");
 };
-
-$("reset").onclick = async () => { await fetch("api/reset", {method:"POST"}); msg("statistics reset"); };
+$("reset").onclick = async () => { await fetch("api/reset", {method:"POST"}); setMsg("msg","statistics reset","good"); };
 $("snap").onclick  = async () => {
   const out = await (await fetch("api/snapshot", {method:"POST"})).json();
-  msg(out.path ? "saved " + out.path : (out.error || "nothing to save"), !out.path);
+  setMsg("msg", out.path ? "saved " + out.path : (out.error || "nothing to save"), out.path ? "good" : "err");
 };
 $("csv").onclick = () => { window.location = "api/export.csv"; };
 
+/* ------------------------------------------------------------ enroll */
+function details() {
+  const d = {};
+  for (const f of ["student_id","name","email","programme","section","notes"])
+    d[f] = $("f_" + f).value.trim();
+  return d;
+}
+
+$("estart").onclick = async () => {
+  const d = details();
+  if (!d.student_id || !d.name) { setMsg("emsg", "a student ID and a name are both required", "err"); return; }
+  const body = Object.assign({}, d, {
+    count: parseInt($("e_count").value),
+    camera_index: parseInt($("e_camera").value),
+    detector: document.querySelector('input[name=edet]:checked').value,
+    blur_threshold: parseFloat($("e_blur").value),
+    gap: parseInt($("e_gap").value),
+    replace: $("e_replace").checked,
+    score_threshold: parseFloat($("scoreThreshold").value)
+  });
+  setMsg("emsg", "starting capture ...");
+  const res = await fetch("api/enroll/start", { method:"POST", body: JSON.stringify(body) });
+  const out = await res.json();
+  if (!res.ok) { setMsg("emsg", out.error || "could not start", "err"); return; }
+  enrolling = true; running = false;
+  $("estart").disabled = true; $("estop").disabled = false;
+  $("start").disabled = true; $("stop").disabled = true;
+  syncStreams();
+};
+
+$("estop").onclick = async () => {
+  await fetch("api/enroll/stop", { method:"POST" });
+  enrolling = false; $("estart").disabled = false; $("estop").disabled = true;
+  $("start").disabled = false;
+  clearStreams("stopped"); loadPeople();
+};
+
+async function loadPeople() {
+  const people = await (await fetch("api/people")).json();
+  const body = $("peopleList");
+  if (!people.length) {
+    body.innerHTML = "<tr><td colspan='7' class='muted'>nobody enrolled yet</td></tr>";
+    return;
+  }
+  body.innerHTML = people.map(p =>
+    "<tr><td><b>" + esc(p.name) + "</b></td><td class='muted'>" + esc(p.student_id || "-") +
+    "</td><td class='muted'>" + esc(p.programme || "-") + "</td><td class='muted'>" +
+    esc(p.section || "-") + "</td><td>" + p.images + "</td><td class='muted'>" +
+    esc((p.enrolled_at || "").split(" ")[0] || "-") +
+    "</td><td><button class='linkbtn' data-del='" + esc(p.folder) + "'>remove</button></td></tr>"
+  ).join("");
+  body.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    if (!confirm("Remove " + b.dataset.del + " and all their images?")) return;
+    const r = await fetch("api/people/delete", { method:"POST",
+      body: JSON.stringify({ folder: b.dataset.del }) });
+    const o = await r.json();
+    setMsg("emsg", r.ok ? "removed " + b.dataset.del : (o.error || "could not remove"),
+           r.ok ? "good" : "err");
+    loadPeople();
+  });
+}
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+$("train").onclick = async () => {
+  setMsg("tmsg", "training ...");
+  $("train").disabled = true;
+  const res = await fetch("api/train", { method:"POST", body: JSON.stringify({
+    recognizer: $("trainRec").value, detector: $("trainDet").value,
+    score_threshold: parseFloat($("scoreThreshold").value) })});
+  const out = await res.json();
+  if (!res.ok) { setMsg("tmsg", out.error || "could not start training", "err");
+                 $("train").disabled = false; return; }
+  pollTraining();
+};
+
+async function pollTraining() {
+  const s = await (await fetch("api/train/status")).json();
+  if (s.state === "running") { setMsg("tmsg", s.message || "training ..."); setTimeout(pollTraining, 600); return; }
+  $("train").disabled = false;
+  setMsg("tmsg", s.message, s.state === "error" ? "err" : "good");
+  if (s.progress && s.progress.length) {
+    $("trainTable").classList.remove("hide");
+    $("trainRows").innerHTML = s.progress.map(p =>
+      "<tr><td>" + esc(p.name) + "</td><td>" + p.images + "</td><td>" + p.faces_found +
+      "</td><td class='" + (p.rate >= 80 ? "muted" : "bad") + "'>" + p.rate + "%</td></tr>").join("");
+  }
+  if (s.state === "done") loadConfig();
+}
+
+/* -------------------------------------------------------- statistics */
 const FIELDS = [
   ["frames","Frames"], ["total_faces","Faces"], ["detection_rate","Detection rate"],
   ["throughput_fps","Throughput"], ["mean_detect_ms","Detection"],
   ["mean_pipeline_ms","Pipeline mean"], ["max_pipeline_ms","Pipeline max"],
-  ["meets_nfreq3","NFReq-3"]
+  ["unknown","Unknown faces"]
 ];
 const UNITS = { detection_rate:"%", throughput_fps:" fps", mean_detect_ms:" ms",
                 mean_pipeline_ms:" ms", max_pipeline_ms:" ms" };
@@ -315,37 +556,53 @@ const UNITS = { detection_rate:"%", throughput_fps:" fps", mean_detect_ms:" ms",
 async function poll() {
   try {
     const s = await (await fetch("api/status")).json();
-    $("state").innerHTML = s.state === "running"
-      ? '<span class="pill ok">running</span>'
-      : '<span class="pill ' + (s.state === "error" ? "bad" : "") + '">' + s.state + '</span>';
-    // Reattach after a page reload, so refreshing during a run keeps the preview.
-    if (s.state === "running" && !running) attachStream();
-    if (s.state !== "running" && running) {
-      detachStream(s.state === "error" ? "error" : "finished");
-      if (s.state === "error") msg(s.error, true);
-      else if (s.state === "finished") msg("source finished");
+    const e = s.enroll || {};
+    const live = s.state === "running" || e.state === "running";
+    $("state").innerHTML = live
+      ? '<span class="pill ok">' + (e.state === "running" ? "capturing" : "running") + '</span>'
+      : '<span class="pill ' + (s.state === "error" ? "bad" : "idle") + '">' + s.state + '</span>';
+
+    if (s.state === "running" && !running && !enrolling) {
+      running = true; $("start").disabled = true; $("stop").disabled = false; syncStreams();
     }
+    if (s.state !== "running" && running) {
+      running = false; $("start").disabled = false; $("stop").disabled = true;
+      clearStreams(s.state === "error" ? "error" : "finished");
+      if (s.state === "error") setMsg("msg", s.error, "err");
+      else if (s.state === "finished") setMsg("msg", "source finished");
+    }
+
+    if (e.state === "running") {
+      const pct = e.target ? Math.round(100 * e.saved / e.target) : 0;
+      $("progbar").style.width = pct + "%";
+      setMsg("emsg", e.saved + " / " + e.target + " captured - " + (e.message || ""));
+    } else if (enrolling) {
+      enrolling = false;
+      $("estart").disabled = false; $("estop").disabled = true; $("start").disabled = false;
+      $("progbar").style.width = (e.target ? Math.round(100 * e.saved / e.target) : 0) + "%";
+      clearStreams(e.state === "error" ? "error" : "capture finished");
+      setMsg("emsg", e.state === "error" ? (e.error || "capture failed")
+             : "captured " + e.saved + " images into " + e.folder + ". Train the recognizer below.",
+             e.state === "error" ? "err" : "good");
+      loadPeople();
+    }
+
     const st = s.stats;
-    $("stats").innerHTML = FIELDS.map(([k, label]) => {
-      let v = st[k];
-      if (k === "meets_nfreq3")
-        v = st.frames ? (v ? '<span class="pill ok">PASS</span>' : '<span class="pill bad">FAIL</span>') : "-";
-      else v = v + (UNITS[k] || "");
-      return '<div class="stat"><div class="k">' + label + '</div><div class="v">' + v + '</div></div>';
-    }).join("");
+    $("stats").innerHTML = FIELDS.map(([k, label]) =>
+      '<div class="stat"><div class="k">' + label + '</div><div class="v">' +
+      st[k] + (UNITS[k] || "") + '</div></div>').join("");
 
     const rows = st.people.map(p =>
-      "<tr><td>" + p.name + "</td><td class='muted'>" + (p.id || "-") +
+      "<tr><td>" + esc(p.name) + "</td><td class='muted'>" + esc(p.id || "-") +
       "</td><td>" + p.frames + "</td><td class='muted'>" + p.share + "%</td></tr>").join("");
     const unknown = st.unknown
-      ? "<tr><td class='muted'>Unknown</td><td class='muted'>-</td><td>" + st.unknown + "</td><td class='muted'>-</td></tr>"
-      : "";
+      ? "<tr><td class='muted'>Unknown</td><td class='muted'>-</td><td>" + st.unknown + "</td><td class='muted'>-</td></tr>" : "";
     $("people").innerHTML = (rows + unknown) || "<tr><td colspan='4' class='muted'>nothing yet</td></tr>";
-  } catch (e) { /* server busy, try again next tick */ }
+  } catch (err) { /* server busy, try again next tick */ }
   setTimeout(poll, 700);
 }
 
-loadConfig(); poll();
+loadConfig(); loadPeople(); poll();
 </script>
 </body>
 </html>
@@ -354,8 +611,10 @@ loadConfig(); poll();
 
 # ==================================================================== handler
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FaceTrack/0.1"
+    server_version = "FaceTrack/0.2"
     session: PipelineSession = None          # set by serve()
+    enroll: EnrollmentSession = None
+    training: TrainingJob = None
 
     def log_message(self, fmt, *args):       # keep the console readable
         if self.path.startswith(("/stream", "/api/status")):
@@ -381,21 +640,45 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             return {}
 
+    @classmethod
+    def _active(cls):
+        """Whichever of the two is producing frames right now."""
+        if cls.enroll is not None and cls.enroll.state == "running":
+            return cls.enroll
+        return cls.session
+
+    @staticmethod
+    def _detector_from(body: dict):
+        name = body.get("detector", "haar")
+        if name == "haar":
+            return get_detector(
+                "haar",
+                scale_factor=float(body.get("scale_factor", config.HAAR_SCALE_FACTOR)),
+                min_neighbors=int(body.get("min_neighbors", config.HAAR_MIN_NEIGHBORS)),
+                min_size=(int(body.get("min_size", config.HAAR_MIN_SIZE[0])),) * 2)
+        return get_detector("yunet", score_threshold=float(
+            body.get("score_threshold", config.YUNET_SCORE_THRESHOLD)))
+
     # ------------------------------------------------------------- routing
     def do_GET(self) -> None:
-        route = urlparse(self.path)
-        path = route.path.rstrip("/") or "/"
+        path = urlparse(self.path).path.rstrip("/") or "/"
         try:
             if path == "/":
                 self._send_page()
             elif path == "/stream.mjpg":
                 self._send_stream()
             elif path == "/api/status":
-                self._json(self.session.status())
+                payload = self.session.status()
+                payload["enroll"] = self.enroll.status()
+                self._json(payload)
             elif path == "/api/config":
                 self._json(self._config_payload())
             elif path == "/api/files":
                 self._json(self._files_payload())
+            elif path == "/api/people":
+                self._json(list_people())
+            elif path == "/api/train/status":
+                self._json(self.training.status())
             elif path == "/api/export.csv":
                 self._send_csv()
             else:
@@ -404,8 +687,7 @@ class Handler(BaseHTTPRequestHandler):
             pass                                  # the browser navigated away
 
     def do_POST(self) -> None:
-        route = urlparse(self.path)
-        path = route.path.rstrip("/") or "/"
+        path = urlparse(self.path).path.rstrip("/") or "/"
         try:
             if path == "/api/start":
                 self._start(self._read_json())
@@ -416,11 +698,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.session.stats.reset()
                 self._json({"ok": True})
             elif path == "/api/snapshot":
-                saved = self.session.save_snapshot()
-                self._json({"path": str(saved)} if saved
-                           else {"error": "nothing to save yet"})
+                saved = self._active().save_snapshot()
+                self._json({"path": str(saved)} if saved else {"error": "nothing to save yet"})
             elif path == "/api/upload":
-                self._upload(parse_qs(route.query))
+                self._upload(parse_qs(urlparse(self.path).query))
+            elif path == "/api/enroll/start":
+                self._enroll_start(self._read_json())
+            elif path == "/api/enroll/stop":
+                self.enroll.stop()
+                self._json({"ok": True})
+            elif path == "/api/people/delete":
+                folder = (self._read_json().get("folder") or "").strip()
+                ok = delete_person(folder) if folder else False
+                self._json({"ok": True} if ok else {"error": "no such person"},
+                           200 if ok else 400)
+            elif path == "/api/train":
+                self._train(self._read_json())
             else:
                 self._json({"error": "not found"}, 404)
         except ConnectionError:
@@ -446,17 +739,18 @@ class Handler(BaseHTTPRequestHandler):
         last_id = -1
         idle = 0
         while True:
-            if self.session.state not in ("running",):
+            source = self._active()
+            if source.state != "running":
                 idle += 1
                 if idle > 40:                       # about four seconds
                     break
-            current = self.session.frame_id
+            current = source.frame_id
             if current == last_id:
                 time.sleep(0.02)
                 continue
             last_id = current
             idle = 0
-            jpeg = self.session.latest_jpeg()
+            jpeg = source.latest_jpeg()
             if jpeg is None:
                 time.sleep(0.05)
                 continue
@@ -499,6 +793,7 @@ class Handler(BaseHTTPRequestHandler):
             "detectors": list(DETECTOR_NAMES),
             "recognizers": recognizers,
             "yunet_available": config.YUNET_MODEL.is_file(),
+            "detail_fields": list(DETAIL_FIELDS),
         }
 
     @staticmethod
@@ -525,6 +820,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # -------------------------------------------------------------- actions
     def _start(self, body: dict) -> None:
+        if self.enroll.state == "running":
+            self._json({"error": "an enrollment capture is using the camera"}, 409)
+            return
         threshold = body.get("threshold")
         try:
             threshold = float(threshold) if threshold not in (None, "") else None
@@ -550,6 +848,44 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": f"{type(exc).__name__}: {exc}"}, 400)
             return
         self._json({"ok": True, "detector_description": self.session.detector_description})
+
+    def _enroll_start(self, body: dict) -> None:
+        # Only one thing can hold the camera, so recognition stands down first.
+        self.session.stop()
+        self.enroll.stop()
+        details = {field: body.get(field, "") for field in DETAIL_FIELDS}
+        try:
+            self.enroll.start(
+                details,
+                count=int(body.get("count", config.CAPTURE_DEFAULT_COUNT)),
+                detector=body.get("detector", "haar"),
+                camera_index=int(body.get("camera_index", config.CAMERA_INDEX)),
+                source=body.get("source") or None,
+                blur_threshold=float(body.get("blur_threshold", config.CAPTURE_BLUR_THRESHOLD)),
+                gap=int(body.get("gap", config.CAPTURE_MIN_FRAME_GAP)),
+                replace=bool(body.get("replace")),
+                score_threshold=body.get("score_threshold", config.YUNET_SCORE_THRESHOLD),
+            )
+        except Exception as exc:
+            self._json({"error": f"{type(exc).__name__}: {exc}"}, 400)
+            return
+        self._json({"ok": True, "folder": self.enroll.status()["folder"]})
+
+    def _train(self, body: dict) -> None:
+        if self.training.running:
+            self._json({"error": "training is already running"}, 409)
+            return
+        name = body.get("recognizer", "lbph")
+        if name not in RECOGNIZER_NAMES:
+            self._json({"error": f"unknown recognizer {name}"}, 400)
+            return
+        try:
+            detector = self._detector_from(body)
+            self.training.start(name, detector)
+        except Exception as exc:
+            self._json({"error": f"{type(exc).__name__}: {exc}"}, 400)
+            return
+        self._json({"ok": True})
 
     def _upload(self, query: dict) -> None:
         name = (query.get("name") or ["upload.bin"])[0]
@@ -596,13 +932,15 @@ def serve(host: str = "0.0.0.0", port: int = 8000,
     config.ensure_dirs()
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     Handler.session = session or PipelineSession()
+    Handler.enroll = EnrollmentSession()
+    Handler.training = TrainingJob()
 
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
 
     shown = local_ip() if host in ("0.0.0.0", "") else host
     print("=" * 62)
-    print("Face Track web interface")
+    print("Face Track web interface (version 2)")
     print("=" * 62)
     print(f"  on this machine : http://localhost:{port}/")
     if host in ("0.0.0.0", ""):
@@ -616,5 +954,6 @@ def serve(host: str = "0.0.0.0", port: int = 8000,
         print("\nshutting down")
     finally:
         Handler.session.stop()
+        Handler.enroll.stop()
         httpd.server_close()
     return 0

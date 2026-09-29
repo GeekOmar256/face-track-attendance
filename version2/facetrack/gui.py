@@ -37,7 +37,7 @@ STAT_FIELDS = [
     ("mean_detect_ms", "Detection"),
     ("mean_pipeline_ms", "Pipeline mean"),
     ("max_pipeline_ms", "Pipeline max"),
-    ("meets_nfreq3", "NFReq-3"),
+    ("unknown", "Unknown faces"),
 ]
 UNITS = {"detection_rate": "%", "throughput_fps": " fps", "mean_detect_ms": " ms",
          "mean_pipeline_ms": " ms", "max_pipeline_ms": " ms"}
@@ -207,8 +207,6 @@ class FaceTrackGUI:
             self.stat_vars[key] = var
             lab = ttk.Label(box, textvariable=var, font=("TkDefaultFont", 11, "bold"))
             lab.grid(row=1, column=i, sticky="w")
-            if key == "meets_nfreq3":
-                self.nfreq_label = lab
 
         ttk.Separator(box, orient="horizontal").grid(row=2, column=0, columnspan=8,
                                                      sticky="ew", pady=6)
@@ -344,16 +342,7 @@ class FaceTrackGUI:
     def _refresh_stats(self) -> None:
         data = self.session.stats.snapshot()
         for key, _ in STAT_FIELDS:
-            if key == "meets_nfreq3":
-                if data["frames"]:
-                    value = "PASS" if data[key] else "FAIL"
-                    self.nfreq_label.configure(foreground="#0a0" if data[key] else "#c00")
-                else:
-                    value = "-"
-                    self.nfreq_label.configure(foreground="black")
-            else:
-                value = f"{data[key]}{UNITS.get(key, '')}"
-            self.stat_vars[key].set(value)
+            self.stat_vars[key].set(f"{data[key]}{UNITS.get(key, '')}")
 
         lines = [f"{p['name']:<28} {p['id']:<10} {p['frames']:>5} frames  ({p['share']:.0f}%)"
                  for p in data["people"][:10]]
