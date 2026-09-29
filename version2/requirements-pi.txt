@@ -1,0 +1,19 @@
+# Raspberry Pi 4.
+#
+# Deliberately thin. Every model in this project runs through OpenCV's own DNN
+# module, so the Pi needs no TensorFlow, no PyTorch and no dlib. That is the
+# whole reason YuNet and SFace were chosen over a Keras or PyTorch model.
+#
+# Install with:
+#     sudo apt install -y python3-opencv python3-picamera2
+#     pip install -r requirements-pi.txt
+#
+# picamera2 comes from apt on Raspberry Pi OS and is intentionally not pinned
+# here, because pip installing it separately tends to fight the system package.
+opencv-contrib-python>=4.7
+numpy>=1.24
+
+# For the browser interface nothing further is needed, and no display is
+# required: run  python scripts/run_web.py  and open the address it prints from
+# a laptop or phone on the same Wi-Fi.
+# Only if you want the desktop window instead:  sudo apt install python3-tk
