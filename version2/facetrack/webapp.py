@@ -201,6 +201,11 @@ PAGE = """<!doctype html>
     <div id="cameraBox">
       <label>Camera index</label>
       <input type="number" id="cameraIndex" value="0" min="0" max="8">
+      <label>Rotation <span class="muted" style="font-weight:400">(if the camera is not upright)</span></label>
+      <select id="rotate">
+        <option value="0">none</option><option value="90">90&deg;</option>
+        <option value="180">180&deg;</option><option value="270">270&deg;</option>
+      </select>
     </div>
     <div id="fileBox" class="hide">
       <label>Upload a file to the server</label>
@@ -302,6 +307,11 @@ PAGE = """<!doctype html>
       <div><label>Images to capture</label><input type="number" id="e_count" value="30" min="5" max="200"></div>
       <div><label>Camera index</label><input type="number" id="e_camera" value="0" min="0" max="8"></div>
     </div>
+    <label>Rotation</label>
+    <select id="e_rotate">
+      <option value="0">none</option><option value="90">90&deg;</option>
+      <option value="180">180&deg;</option><option value="270">270&deg;</option>
+    </select>
     <label>Detector</label>
     <div class="chips" id="eDetKind">
       <label><input type="radio" name="edet" value="haar" checked> Haar</label>
@@ -428,6 +438,7 @@ $("start").onclick = async () => {
     score_threshold: parseFloat($("scoreThreshold").value),
     loop: $("loop").checked
   };
+  body.rotate = parseInt($("rotate").value);
   if (sourceKind() === "camera") body.camera_index = parseInt($("cameraIndex").value);
   else {
     body.source = $("serverFile").value;
@@ -467,6 +478,7 @@ $("estart").onclick = async () => {
   const body = Object.assign({}, d, {
     count: parseInt($("e_count").value),
     camera_index: parseInt($("e_camera").value),
+    rotate: parseInt($("e_rotate").value),
     detector: document.querySelector('input[name=edet]:checked').value,
     blur_threshold: parseFloat($("e_blur").value),
     gap: parseInt($("e_gap").value),
@@ -839,6 +851,7 @@ class Handler(BaseHTTPRequestHandler):
                 recognizer=body.get("recognizer", "none"),
                 threshold=threshold,
                 loop=bool(body.get("loop")),
+                rotate=int(body.get("rotate", config.CAMERA_ROTATION)),
                 scale_factor=body.get("scale_factor", config.HAAR_SCALE_FACTOR),
                 min_neighbors=body.get("min_neighbors", config.HAAR_MIN_NEIGHBORS),
                 min_size=body.get("min_size", config.HAAR_MIN_SIZE[0]),
@@ -864,6 +877,7 @@ class Handler(BaseHTTPRequestHandler):
                 blur_threshold=float(body.get("blur_threshold", config.CAPTURE_BLUR_THRESHOLD)),
                 gap=int(body.get("gap", config.CAPTURE_MIN_FRAME_GAP)),
                 replace=bool(body.get("replace")),
+                rotate=int(body.get("rotate", config.CAMERA_ROTATION)),
                 score_threshold=body.get("score_threshold", config.YUNET_SCORE_THRESHOLD),
             )
         except Exception as exc:

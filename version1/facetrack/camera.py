@@ -16,6 +16,13 @@ import numpy as np
 
 from . import config
 
+# Quarter turns, for a camera that is not mounted upright.
+_ROTATIONS = {
+    90: cv2.ROTATE_90_CLOCKWISE,
+    180: cv2.ROTATE_180,
+    270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+}
+
 
 def picamera_available() -> bool:
     try:
@@ -35,9 +42,13 @@ class CameraSource:
         height: int = config.FRAME_HEIGHT,
         camera_index: int = config.CAMERA_INDEX,
         prefer_picamera: bool = True,
+        rotate: int = config.CAMERA_ROTATION,
     ) -> None:
         self.width = width
         self.height = height
+        self.rotate = int(rotate) % 360
+        if self.rotate not in (0, 90, 180, 270):
+            raise ValueError("rotate must be one of 0, 90, 180, 270")
         self.kind = "unknown"
         self._picam = None
         self._capture = None
@@ -100,11 +111,23 @@ class CameraSource:
         self.kind = "webcam"
 
     # ------------------------------------------------------------ reading
+    def _orient(self, frame: np.ndarray) -> np.ndarray:
+        """Rotate the frame if the camera is not mounted upright.
+
+        Both detectors are trained on upright faces and find nothing in a
+        sideways or upside down image, so this has to happen before detection.
+        """
+        if not self.rotate or frame is None:
+            return frame
+        return cv2.rotate(frame, _ROTATIONS[self.rotate])
+
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
         if self._picam is not None:
             frame = self._picam.capture_array()
-            # picamera2 hands back RGB; the rest of the pipeline works in BGR.
-            return True, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            # picamera2's "RGB888" hands back channels in BGR order already,
+            # which is what OpenCV expects. Converting here would swap red and
+            # blue a second time and turn skin blue.
+            return True, self._orient(frame)
 
         if self._images:
             if self._image_pos >= len(self._images):
@@ -114,10 +137,12 @@ class CameraSource:
             frame = cv2.imread(str(path))
             if frame is None:
                 return self.read()
-            return True, frame
+            return True, self._orient(frame)
 
         ok, frame = self._capture.read()
-        return ok, frame
+        if not ok or frame is None:
+            return False, None
+        return True, self._orient(frame)
 
     def __iter__(self):
         while True:
@@ -146,7 +171,8 @@ class CameraSource:
         self.release()
 
     def __repr__(self) -> str:
-        return f"CameraSource(kind={self.kind}, size={self.width}x{self.height})"
+        turn = f", rotate={self.rotate}" if self.rotate else ""
+        return f"CameraSource(kind={self.kind}, size={self.width}x{self.height}{turn})"
 
 
 def _is_windows() -> bool:

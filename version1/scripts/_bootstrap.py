@@ -35,6 +35,10 @@ def add_source_args(parser: argparse.ArgumentParser) -> None:
                        help="capture height (default: %(default)s)")
     group.add_argument("--no-picamera", action="store_true",
                        help="ignore picamera2 even on the Raspberry Pi")
+    group.add_argument("--rotate", type=int, choices=(0, 90, 180, 270),
+                       default=config.CAMERA_ROTATION,
+                       help="turn each frame before detection, for a camera that is "
+                            "not mounted upright (default: %(default)s)")
 
 
 def add_display_args(parser: argparse.ArgumentParser) -> None:
@@ -118,6 +122,7 @@ def build_camera(args: argparse.Namespace):
         height=getattr(args, "height", config.FRAME_HEIGHT),
         camera_index=getattr(args, "camera_index", config.CAMERA_INDEX),
         prefer_picamera=not getattr(args, "no_picamera", False),
+        rotate=getattr(args, "rotate", config.CAMERA_ROTATION),
     )
 
 

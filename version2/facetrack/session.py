@@ -154,20 +154,22 @@ class PipelineSession(FrameSource):
         self.recognizer_name = "none"
         self.source_label = "-"
         self.detector_description = ""
-        self._source_spec: Tuple[Optional[str], int] = (None, config.CAMERA_INDEX)
+        self._source_spec: Tuple[Optional[str], int, int] = (
+            None, config.CAMERA_INDEX, config.CAMERA_ROTATION)
 
     # ------------------------------------------------------------ lifecycle
     def start(self, source: Optional[str] = None, camera_index: int = config.CAMERA_INDEX,
               detector: str = "haar", recognizer: str = "none",
               threshold: Optional[float] = None, loop: bool = False,
-              overlay: bool = True, **detector_kwargs) -> None:
+              overlay: bool = True, rotate: int = config.CAMERA_ROTATION,
+              **detector_kwargs) -> None:
         """Build the pipeline and begin processing. Raises on a bad configuration."""
         if self.state == "running":
             raise RuntimeError("a session is already running")
 
         # Remembered so a finished video or photo folder can be reopened when
         # looping is on.
-        self._source_spec = (source, camera_index)
+        self._source_spec = (source, camera_index, int(rotate))
         camera = self._open_camera()
 
         try:
@@ -188,13 +190,13 @@ class PipelineSession(FrameSource):
         self._thread.start()
 
     def _open_camera(self) -> CameraSource:
-        source, camera_index = self._source_spec
+        source, camera_index, rotate = self._source_spec
         if source:
             self.source_label = Path(source).name
-            return CameraSource(source=source)
+            return CameraSource(source=source, rotate=rotate)
         self.source_label = f"camera {camera_index}"
         return CameraSource(width=config.FRAME_WIDTH, height=config.FRAME_HEIGHT,
-                            camera_index=camera_index)
+                            camera_index=camera_index, rotate=rotate)
 
     @staticmethod
     def _build_detector(name: str, kwargs: dict):

@@ -141,7 +141,7 @@ class EnrollmentSession(FrameSource):
               detector: str = "haar", camera_index: int = config.CAMERA_INDEX,
               source: Optional[str] = None, blur_threshold: float = config.CAPTURE_BLUR_THRESHOLD,
               gap: int = config.CAPTURE_MIN_FRAME_GAP, replace: bool = False,
-              **detector_kwargs) -> None:
+              rotate: int = config.CAMERA_ROTATION, **detector_kwargs) -> None:
         if self.state == "running":
             raise RuntimeError("an enrollment is already running")
 
@@ -177,9 +177,9 @@ class EnrollmentSession(FrameSource):
                {"score_threshold": float(detector_kwargs.get(
                    "score_threshold", config.YUNET_SCORE_THRESHOLD))}))
 
-        camera = (CameraSource(source=source) if source else
+        camera = (CameraSource(source=source, rotate=rotate) if source else
                   CameraSource(width=config.FRAME_WIDTH, height=config.FRAME_HEIGHT,
-                               camera_index=camera_index))
+                               camera_index=camera_index, rotate=rotate))
 
         self._thread = threading.Thread(
             target=self._run, args=(camera, det, blur_threshold, max(1, int(gap))),
