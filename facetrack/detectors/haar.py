@@ -40,16 +40,47 @@ class HaarDetector(FaceDetector):
         self.cascade_path = cascade_path
 
     @staticmethod
-    def _resolve_cascade(cascade_name: str) -> Path:
+    def _cascade_search_paths() -> List[Path]:
+        """Every place a Haar cascade XML might live, across OpenCV builds.
+
+        The pip wheels expose cv2.data.haarcascades. Debian's python3-opencv,
+        which is what Raspberry Pi OS installs from apt, has no cv2.data at all
+        and ships the files under /usr/share instead. Checking both keeps the
+        baseline detector working on the Pi and on a laptop.
+        """
+        paths: List[Path] = []
+        data = getattr(cv2, "data", None)
+        bundled = getattr(data, "haarcascades", None) if data is not None else None
+        if bundled:
+            paths.append(Path(bundled))
+        paths.append(Path(cv2.__file__).resolve().parent / "data")
+        paths += [Path(p) for p in (
+            "/usr/share/opencv4/haarcascades",
+            "/usr/share/opencv/haarcascades",
+            "/usr/local/share/opencv4/haarcascades",
+            "/usr/local/share/opencv/haarcascades",
+        )]
+        return paths
+
+    @classmethod
+    def _resolve_cascade(cls, cascade_name: str) -> Path:
         candidate = Path(cascade_name)
         if candidate.is_file():
             return candidate
-        bundled = Path(cv2.data.haarcascades) / cascade_name
-        if bundled.is_file():
-            return bundled
-        raise FileNotFoundError(
-            f"cascade '{cascade_name}' not found as a path or inside {cv2.data.haarcascades}"
-        )
+
+        searched = cls._cascade_search_paths()
+        for folder in searched:
+            found = folder / cascade_name
+            if found.is_file():
+                return found
+
+        message = [f"cascade '{cascade_name}' not found. Looked in:"]
+        message += [f"  {folder}" for folder in searched]
+        message += ["",
+                    "On Debian or Raspberry Pi OS the cascades come from the "
+                    "opencv-data package:",
+                    "  sudo apt install -y opencv-data"]
+        raise FileNotFoundError("\n".join(message))
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
