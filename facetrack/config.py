@@ -25,6 +25,10 @@ SFACE_GALLERY = MODELS_DIR / "sface_gallery.npz"
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 CAMERA_INDEX = 0
+# Quarter turns applied to every frame before detection, for a camera that
+# is not mounted upright. Both detectors expect upright faces and find
+# nothing in a sideways image. One of 0, 90, 180, 270.
+CAMERA_ROTATION = 0
 
 # ---------------------------------------------------------------- Haar cascade (baseline detector)
 HAAR_CASCADE_NAME = "haarcascade_frontalface_default.xml"
