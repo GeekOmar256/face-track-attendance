@@ -529,7 +529,7 @@ $("e_files").onchange = async ev => {
   if (!files.length) return;
   const d = details();
   const det = document.querySelector('input[name=edet]:checked').value;
-  let added = 0; const problems = [];
+  let added = 0, ignored = 0; const problems = [];
   for (let i = 0; i < files.length; i++) {
     setMsg("emsg", "adding " + (i + 1) + " of " + files.length + " ...");
     const qs = new URLSearchParams(Object.assign({}, d, {
@@ -542,6 +542,7 @@ $("e_files").onchange = async ev => {
     } catch (err) { out = { ok: false, reason: "upload failed" }; }
     if (out.ok) {
       added++;
+      ignored += out.extra_detections || 0;
       $("viewE").src = "frame.jpg?src=enroll&t=" + Date.now();
       $("phE").textContent = "";
     } else {
@@ -550,6 +551,7 @@ $("e_files").onchange = async ev => {
   }
   setMsg("emsg",
     "added " + added + " of " + files.length +
+    (ignored ? " (ignored " + ignored + " false detection" + (ignored > 1 ? "s" : "") + ")" : "") +
     (problems.length ? ". Skipped: " + problems.join(", ") : "") +
     (added ? ". Now press Train now below." : ""),
     problems.length ? "err" : "good");

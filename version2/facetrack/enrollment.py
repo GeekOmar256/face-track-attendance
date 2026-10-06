@@ -37,6 +37,13 @@ PERSON_FILE = "person.json"
 # rest are there because an attendance record is more useful than a name alone.
 DETAIL_FIELDS = ("student_id", "name", "email", "programme", "section", "notes")
 
+# How much bigger the main face must be than the next one before the others are
+# treated as noise. Haar in particular reports spurious boxes on hair, beards and
+# patterned backgrounds, and a portrait where one face dwarfs the rest is one
+# person photographed badly, not a group. Two faces of similar size really are
+# two people, and filing that under one name would mislabel somebody.
+DOMINANT_RATIO = 2.0
+
 POSE_PROMPTS = [
     "look straight at the camera",
     "turn slightly left",
@@ -109,6 +116,24 @@ def list_people(dataset_dir: Optional[Path] = None) -> List[Dict]:
     return people
 
 
+def pick_subject(detections: List, ratio: float = DOMINANT_RATIO):
+    """Choose the one face an image should be filed under.
+
+    Returns (detection, extra_count, reason). A reason means the image was
+    refused: either nothing was found, or several faces are of comparable size
+    and the picture holds more than one person.
+    """
+    if not detections:
+        return None, 0, "no face found in this image"
+
+    ordered = sorted(detections, key=lambda d: d.area, reverse=True)
+    extra = len(ordered) - 1
+    if extra and ordered[0].area < ordered[1].area * ratio:
+        return None, extra, (f"{len(ordered)} faces of similar size, "
+                             "one person per image")
+    return ordered[0], extra, None
+
+
 def next_image_index(folder: Path) -> int:
     """Continue numbering after whatever is already in the folder."""
     return count_images(folder) + 1
@@ -132,12 +157,9 @@ def add_photo(details: Dict, data: bytes, detector,
     if image is None:
         return {"ok": False, "reason": "not a readable image"}
 
-    detections = detector.detect(image)
-    if not detections:
-        return {"ok": False, "reason": "no face found in this image"}
-    if len(detections) > 1:
-        return {"ok": False,
-                "reason": f"{len(detections)} faces found, one person per image"}
+    detection, extra, reason = pick_subject(detector.detect(image))
+    if reason:
+        return {"ok": False, "reason": reason}
 
     folder = person_folder(student_id, name)
     folder.mkdir(parents=True, exist_ok=True)
@@ -148,18 +170,20 @@ def add_photo(details: Dict, data: bytes, detector,
 
     if preview is not None:
         annotated = image.copy()
-        draw_detections(annotated, detections, colors=[GREEN])
-        draw_banner(annotated, [f"{name} ({student_id})",
-                                f"added {path.name}",
-                                f"{count_images(folder)} images in total"])
+        draw_detections(annotated, [detection], colors=[GREEN])
+        lines = [f"{name} ({student_id})", f"added {path.name}",
+                 f"{count_images(folder)} images in total"]
+        if extra:
+            lines.append(f"ignored {extra} smaller detection(s)")
+        draw_banner(annotated, lines)
         preview.publish(annotated)
 
-    detection = detections[0]
     return {
         "ok": True,
         "file": path.name,
         "folder": folder.name,
         "images": count_images(folder),
+        "extra_detections": extra,
         "sharpness": round(blur_score(detection.crop(image, margin=config.CAPTURE_MARGIN)), 1),
     }
 
@@ -266,14 +290,12 @@ class EnrollmentSession(FrameSource):
                 since_save += 1
                 colour = RED
 
-                if len(detections) == 0:
-                    self.message = "no face visible"
-                    self.rejected_faces += 1
-                elif len(detections) > 1:
-                    self.message = f"{len(detections)} faces, only one person at a time"
+                detection, extra, reason = pick_subject(detections)
+                if reason:
+                    self.message = ("no face visible" if not detections
+                                    else f"{len(detections)} faces, one person at a time")
                     self.rejected_faces += 1
                 else:
-                    detection = detections[0]
                     crop = detection.crop(frame, margin=config.CAPTURE_MARGIN)
                     sharpness = blur_score(crop)
                     if sharpness < blur_threshold:
