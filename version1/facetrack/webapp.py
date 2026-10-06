@@ -290,9 +290,18 @@ function detachStream(label) {
   running = false; $("start").disabled = false; $("stop").disabled = true;
 }
 
+// When a source ends normally, swap the live stream for a still of the final
+// frame rather than blanking the preview. A single photo produces one frame and
+// finishes immediately, and the result is the thing worth looking at.
+function holdLastFrame() {
+  $("view").src = "frame.jpg?t=" + Date.now();
+  $("placeholder").textContent = "";
+  running = false; $("start").disabled = false; $("stop").disabled = true;
+}
+
 $("stop").onclick = async () => {
   await fetch("api/stop", { method:"POST" });
-  detachStream("stopped");
+  holdLastFrame();
   msg("stopped, statistics kept");
 };
 
@@ -321,7 +330,7 @@ async function poll() {
     // Reattach after a page reload, so refreshing during a run keeps the preview.
     if (s.state === "running" && !running) attachStream();
     if (s.state !== "running" && running) {
-      detachStream(s.state === "error" ? "error" : "finished");
+      if (s.state === "error") detachStream("error"); else holdLastFrame();
       if (s.state === "error") msg(s.error, true);
       else if (s.state === "finished") msg("source finished");
     }
@@ -390,6 +399,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_page()
             elif path == "/stream.mjpg":
                 self._send_stream()
+            elif path == "/frame.jpg":
+                self._send_frame()
             elif path == "/api/status":
                 self._json(self.session.status())
             elif path == "/api/config":
@@ -465,6 +476,23 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(f"Content-Length: {len(jpeg)}\r\n\r\n".encode())
             self.wfile.write(jpeg)
             self.wfile.write(b"\r\n")
+
+    def _send_frame(self) -> None:
+        """One still JPEG of the most recent processed frame.
+
+        Used to keep the result on screen once the source has ended, which is
+        immediately for a single photograph.
+        """
+        jpeg = self.session.latest_jpeg()
+        if jpeg is None:
+            self._json({"error": "no frame yet"}, 404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(jpeg)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(jpeg)
 
     def _send_csv(self) -> None:
         status = self.session.status()

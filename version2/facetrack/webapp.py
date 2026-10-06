@@ -370,6 +370,15 @@ function clearStreams(label) {
   $("phR").textContent = label; $("phE").textContent = label;
 }
 
+// When a source ends normally, swap the live stream for a still of the final
+// frame rather than blanking the preview. A single photo produces one frame and
+// finishes immediately, and the result is the thing worth looking at.
+function holdLastFrame(which) {
+  const img = $(which), ph = which === "viewR" ? "phR" : "phE";
+  img.src = "frame.jpg?t=" + Date.now();
+  $(ph).textContent = "";
+}
+
 /* --------------------------------------------------------- recognize */
 function sourceKind() { return document.querySelector('input[name=src]:checked').value; }
 function detKind()    { return document.querySelector('input[name=det]:checked').value; }
@@ -455,7 +464,7 @@ $("start").onclick = async () => {
 $("stop").onclick = async () => {
   await fetch("api/stop", { method:"POST" });
   running = false; $("start").disabled = false; $("stop").disabled = true;
-  clearStreams("stopped"); setMsg("msg", "stopped, statistics kept");
+  holdLastFrame("viewR"); setMsg("msg", "stopped, statistics kept");
 };
 $("reset").onclick = async () => { await fetch("api/reset", {method:"POST"}); setMsg("msg","statistics reset","good"); };
 $("snap").onclick  = async () => {
@@ -579,7 +588,7 @@ async function poll() {
     }
     if (s.state !== "running" && running) {
       running = false; $("start").disabled = false; $("stop").disabled = true;
-      clearStreams(s.state === "error" ? "error" : "finished");
+      if (s.state === "error") clearStreams("error"); else holdLastFrame("viewR");
       if (s.state === "error") setMsg("msg", s.error, "err");
       else if (s.state === "finished") setMsg("msg", "source finished");
     }
@@ -592,7 +601,7 @@ async function poll() {
       enrolling = false;
       $("estart").disabled = false; $("estop").disabled = true; $("start").disabled = false;
       $("progbar").style.width = (e.target ? Math.round(100 * e.saved / e.target) : 0) + "%";
-      clearStreams(e.state === "error" ? "error" : "capture finished");
+      if (e.state === "error") clearStreams("error"); else holdLastFrame("viewE");
       setMsg("emsg", e.state === "error" ? (e.error || "capture failed")
              : "captured " + e.saved + " images into " + e.folder + ". Train the recognizer below.",
              e.state === "error" ? "err" : "good");
@@ -679,6 +688,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_page()
             elif path == "/stream.mjpg":
                 self._send_stream()
+            elif path == "/frame.jpg":
+                self._send_frame()
             elif path == "/api/status":
                 payload = self.session.status()
                 payload["enroll"] = self.enroll.status()
@@ -771,6 +782,23 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(f"Content-Length: {len(jpeg)}\r\n\r\n".encode())
             self.wfile.write(jpeg)
             self.wfile.write(b"\r\n")
+
+    def _send_frame(self) -> None:
+        """One still JPEG of the most recent processed frame.
+
+        Used to keep the result on screen once the source has ended, which is
+        immediately for a single photograph.
+        """
+        jpeg = self._active().latest_jpeg()
+        if jpeg is None:
+            self._json({"error": "no frame yet"}, 404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(jpeg)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(jpeg)
 
     def _send_csv(self) -> None:
         status = self.session.status()
