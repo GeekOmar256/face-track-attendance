@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import cv2
+import numpy as np
 
 from . import config
 from .camera import CameraSource
@@ -106,6 +107,61 @@ def list_people(dataset_dir: Optional[Path] = None) -> List[Dict]:
         })
         people.append(entry)
     return people
+
+
+def next_image_index(folder: Path) -> int:
+    """Continue numbering after whatever is already in the folder."""
+    return count_images(folder) + 1
+
+
+def add_photo(details: Dict, data: bytes, detector,
+              preview: Optional[FrameSource] = None) -> Dict:
+    """Add one supplied photograph to a person's folder.
+
+    This is the alternative to capturing from the camera: the team may already
+    have pictures of someone. The same rule applies as during capture, exactly
+    one face per image, because an image holding two people cannot be filed
+    under one name without mislabelling somebody.
+    """
+    student_id = str(details.get("student_id", "")).strip()
+    name = str(details.get("name", "")).strip()
+    if not student_id or not name:
+        return {"ok": False, "reason": "a student ID and a name are both required"}
+
+    image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        return {"ok": False, "reason": "not a readable image"}
+
+    detections = detector.detect(image)
+    if not detections:
+        return {"ok": False, "reason": "no face found in this image"}
+    if len(detections) > 1:
+        return {"ok": False,
+                "reason": f"{len(detections)} faces found, one person per image"}
+
+    folder = person_folder(student_id, name)
+    folder.mkdir(parents=True, exist_ok=True)
+    write_details(folder, details)
+
+    path = folder / f"{student_id}_{next_image_index(folder):03d}.jpg"
+    cv2.imwrite(str(path), image)
+
+    if preview is not None:
+        annotated = image.copy()
+        draw_detections(annotated, detections, colors=[GREEN])
+        draw_banner(annotated, [f"{name} ({student_id})",
+                                f"added {path.name}",
+                                f"{count_images(folder)} images in total"])
+        preview.publish(annotated)
+
+    detection = detections[0]
+    return {
+        "ok": True,
+        "file": path.name,
+        "folder": folder.name,
+        "images": count_images(folder),
+        "sharpness": round(blur_score(detection.crop(image, margin=config.CAPTURE_MARGIN)), 1),
+    }
 
 
 def delete_person(folder_name: str, dataset_dir: Optional[Path] = None) -> bool:

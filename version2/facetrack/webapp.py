@@ -28,7 +28,13 @@ from urllib.parse import parse_qs, urlparse
 
 from . import config
 from .detectors import DETECTOR_NAMES, get_detector
-from .enrollment import DETAIL_FIELDS, EnrollmentSession, delete_person, list_people
+from .enrollment import (
+    DETAIL_FIELDS,
+    EnrollmentSession,
+    add_photo,
+    delete_person,
+    list_people,
+)
 from .recognizers import RECOGNIZER_NAMES, default_model_path
 from .session import PipelineSession
 from .training import TrainingJob
@@ -36,6 +42,7 @@ from .training import TrainingJob
 BOUNDARY = "facetrackframe"
 UPLOAD_DIR = config.DATA_DIR / "uploads"
 MAX_UPLOAD = 512 * 1024 * 1024          # 512 MB, enough for a classroom video
+MAX_PHOTO = 25 * 1024 * 1024            # one enrolment photograph
 
 
 # ======================================================================= page
@@ -325,7 +332,11 @@ PAGE = """<!doctype html>
       <input type="checkbox" id="e_replace" style="width:auto"> Replace this person's existing images
     </label>
 
-    <button class="btn" id="estart">Start capture</button>
+    <div class="row">
+      <button class="btn" id="estart">Start capture</button>
+      <button class="btn ghost" id="epick">Add from images</button>
+    </div>
+    <input type="file" id="e_files" accept="image/*" multiple class="hide">
     <button class="btn ghost" id="estop" disabled>Stop</button>
   </div>
 </div>
@@ -502,6 +513,47 @@ $("estart").onclick = async () => {
   $("estart").disabled = true; $("estop").disabled = false;
   $("start").disabled = true; $("stop").disabled = true;
   syncStreams();
+};
+
+$("epick").onclick = () => {
+  const d = details();
+  if (!d.student_id || !d.name) {
+    setMsg("emsg", "fill in the student ID and the name first", "err"); return;
+  }
+  $("e_files").click();
+};
+
+$("e_files").onchange = async ev => {
+  const files = [...ev.target.files];
+  ev.target.value = "";                      // so the same file can be picked again
+  if (!files.length) return;
+  const d = details();
+  const det = document.querySelector('input[name=edet]:checked').value;
+  let added = 0; const problems = [];
+  for (let i = 0; i < files.length; i++) {
+    setMsg("emsg", "adding " + (i + 1) + " of " + files.length + " ...");
+    const qs = new URLSearchParams(Object.assign({}, d, {
+      detector: det, score_threshold: $("scoreThreshold").value }));
+    let out;
+    try {
+      const res = await fetch("api/enroll/photo?" + qs.toString(),
+                              { method: "POST", body: files[i] });
+      out = await res.json();
+    } catch (err) { out = { ok: false, reason: "upload failed" }; }
+    if (out.ok) {
+      added++;
+      $("viewE").src = "frame.jpg?src=enroll&t=" + Date.now();
+      $("phE").textContent = "";
+    } else {
+      problems.push(files[i].name + " (" + (out.reason || "failed") + ")");
+    }
+  }
+  setMsg("emsg",
+    "added " + added + " of " + files.length +
+    (problems.length ? ". Skipped: " + problems.join(", ") : "") +
+    (added ? ". Now press Train now below." : ""),
+    problems.length ? "err" : "good");
+  loadPeople();
 };
 
 $("estop").onclick = async () => {
@@ -689,7 +741,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/stream.mjpg":
                 self._send_stream()
             elif path == "/frame.jpg":
-                self._send_frame()
+                self._send_frame(parse_qs(urlparse(self.path).query))
             elif path == "/api/status":
                 payload = self.session.status()
                 payload["enroll"] = self.enroll.status()
@@ -727,6 +779,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._upload(parse_qs(urlparse(self.path).query))
             elif path == "/api/enroll/start":
                 self._enroll_start(self._read_json())
+            elif path == "/api/enroll/photo":
+                self._enroll_photo(parse_qs(urlparse(self.path).query))
             elif path == "/api/enroll/stop":
                 self.enroll.stop()
                 self._json({"ok": True})
@@ -783,13 +837,15 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(jpeg)
             self.wfile.write(b"\r\n")
 
-    def _send_frame(self) -> None:
+    def _send_frame(self, query: Optional[dict] = None) -> None:
         """One still JPEG of the most recent processed frame.
 
         Used to keep the result on screen once the source has ended, which is
         immediately for a single photograph.
         """
-        jpeg = self._active().latest_jpeg()
+        wants = ((query or {}).get("src") or [""])[0]
+        source = self.enroll if wants == "enroll" else self._active()
+        jpeg = source.latest_jpeg()
         if jpeg is None:
             self._json({"error": "no frame yet"}, 404)
             return
@@ -912,6 +968,40 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": f"{type(exc).__name__}: {exc}"}, 400)
             return
         self._json({"ok": True, "folder": self.enroll.status()["folder"]})
+
+    def _enroll_photo(self, query: dict) -> None:
+        """Add one supplied photograph to a person, instead of using the camera."""
+        def value(key: str) -> str:
+            return (query.get(key) or [""])[0]
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            self._json({"ok": False, "reason": "empty upload"})
+            return
+        if length > MAX_PHOTO:
+            self._json({"ok": False,
+                        "reason": f"larger than {MAX_PHOTO // (1024 * 1024)} MB"})
+            return
+
+        chunks, remaining = [], length
+        while remaining > 0:
+            chunk = self.rfile.read(min(1 << 20, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+
+        try:
+            detector = self._detector_from({
+                "detector": value("detector") or "haar",
+                "score_threshold": value("score_threshold") or config.YUNET_SCORE_THRESHOLD,
+            })
+        except Exception as exc:
+            self._json({"ok": False, "reason": f"{type(exc).__name__}: {exc}"})
+            return
+
+        details = {field: value(field) for field in DETAIL_FIELDS}
+        self._json(add_photo(details, b"".join(chunks), detector, preview=self.enroll))
 
     def _train(self, body: dict) -> None:
         if self.training.running:
