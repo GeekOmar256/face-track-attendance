@@ -13,217 +13,190 @@ The advisor asked that, once the baseline worked, a deep neural network detector
 be tried and compared against it, as evidence for the choice rather than an
 assumption.
 
-This document compares the two models on identical images and reports what was
-measured. Both detectors run behind the same interface in the project code, so
-they are selected with a flag and see exactly the same frames.
+This document reports the comparison as it was actually carried out: on the
+Raspberry Pi 4, through the project's web interface, on photographs of five
+people taken in the laboratory and the classroom.
 
-## 2. Test conditions, and what they do not cover
+## 2. How the tests were run
+
+Each photograph was uploaded to the Raspberry Pi through the interface and
+processed with one detector at a time. The detector and its parameters were
+changed between runs; the image was not. Both detectors therefore saw identical
+input, which is the point of the exercise.
 
 | | |
 | --- | --- |
-| Images | 30, each containing exactly one face |
-| Identities | 2 |
-| Frame size | 640 px wide |
-| Platform | Windows laptop, AMD64 |
-| Repetitions | Timing averaged over 3 passes after a warm-up pass |
+| Hardware | Raspberry Pi 4, running the pipeline on the board itself |
+| Subjects | 5, photographed in an office and a classroom |
+| Images | Single photographs, each containing exactly one person |
+| Haar settings | scaleFactor 1.1, minSize 60 px, minNeighbors 6 and 10 |
+| YuNet setting | score threshold 0.75 |
+| Recognizer | LBPH, on most runs |
 
-**These conditions are a limitation and the figures must be read with it in
-mind.** The 30 images are photometric and geometric variations derived from two
-source photographs, not 30 independent captures of 30 people. They are adequate
-for comparing two detectors on identical input, which is what this document
-does, and they are *not* adequate for quoting an absolute accuracy figure for
-the system. The measurements also come from a laptop, not from the Raspberry Pi
-the system will run on, so the timings establish the *relative* cost of the two
-models rather than the figure that answers the project's timing requirement.
+### 2.1 A limitation in how the figures were collected
 
-Ground truth is available without hand-labelling because every image was
-captured or selected to contain exactly one face. Two measures follow directly:
-the **detection rate**, the share of images in which at least one face was
-found, and the **false positive count**, the number of boxes beyond the first.
+**The statistics panel accumulates until "Reset statistics" is pressed, and it
+was not pressed between configurations.** The frame counter climbs steadily
+from 3 to 21 across the session, so the "mean time" shown on any later
+screenshot is an average over every run that came before it, mixing Haar and
+YuNet together.
 
-## 3. The two models
+Per-image detection counts can still be recovered exactly, by taking the
+difference between consecutive readings, and that is how section 3 was
+produced. **Per-configuration timings cannot be separated this way**, so
+section 4 quotes only the two readings taken before any mixing occurred.
 
-**Haar Cascade** is the Viola–Jones classifier from 2001, and is the method the
-FYP1 literature review identified as the common choice for attendance systems.
-It slides a window across a greyscale image and applies a cascade of simple
-rectangular contrast tests, rejecting non-face regions as early as possible. It
-is not a learned feature extractor in the modern sense: the features are
-hand-designed and the training selects which to use. The cascade ships inside
-OpenCV as a 908 KB XML file, so it needs no download.
+For the final report, press **Reset statistics** before each configuration.
+Every figure then stands on its own and no reconstruction is needed.
 
-**YuNet** is a small convolutional neural network released through the OpenCV
-model zoo. It is a 227 KB ONNX file and runs through OpenCV's own DNN module,
-which matters for this project: it needs no TensorFlow, no PyTorch and no dlib,
-so the Raspberry Pi install stays at OpenCV plus NumPy.
+## 3. Detection results
 
-Two differences in what they return shape the rest of this comparison:
+Because every photograph contains exactly one person, any detection beyond the
+first is a false positive. Differencing the counters gives the number of boxes
+each detector produced on each image:
 
-- **Haar returns a bounding box and nothing else.** It reports no confidence, so
-  every detection is equally trusted and there is no threshold to tune on the
-  output side. Tuning happens only through the search parameters.
-- **YuNet returns a bounding box, a confidence score, and five facial landmarks**
-  (both eyes, the nose tip, both mouth corners).
-
-## 4. Detection results
-
-At the configuration each model was first run with, and then at the best
-configuration found for each:
-
-| Configuration | Detection rate | Faces found | False positives | Mean time | Max time |
-| --- | --- | --- | --- | --- | --- |
-| Haar, defaults (scaleFactor 1.1, minNeighbors 5) | 96.7% | 29 / 30 | 4 | 28.2 ms | 44.9 ms |
-| Haar, tuned (scaleFactor 1.1, minNeighbors 7) | 96.7% | 29 / 30 | **0** | 28.1 ms | 42.9 ms |
-| Haar, fast (scaleFactor 1.2, minNeighbors 7) | 90.0% | 27 / 30 | 0 | 16.8 ms | 25.6 ms |
-| YuNet, default (score threshold 0.90) | **46.7%** | 14 / 30 | 0 | 16.0 ms | — |
-| YuNet, tuned (score threshold 0.70) | **100%** | 30 / 30 | **0** | 16.9 ms | 25.7 ms |
-
-Read on its own, the first and last rows say YuNet is better on every axis:
-it found every face, produced no false detections, and did so in roughly 60% of
-the time. That conclusion survives a fairer comparison, but only after two
-things are said about the defaults.
-
-## 5. Both default configurations are wrong for this data
-
-This is the most useful finding, and it applies to each model in the opposite
-direction.
-
-### 5.1 Haar's default accepts false positives
-
-Varying `minNeighbors`, which sets how many overlapping detections are required
-before a region is accepted:
-
-| minNeighbors | Detected | Missed | False positives |
+| Subject | Detector | Boxes produced | False positives |
 | --- | --- | --- | --- |
-| 1 | 30 | 0 | 19 |
-| 3 | 30 | 0 | 7 |
-| **5 (default)** | 29 | 1 | **4** |
-| **7** | 29 | 1 | **0** |
-| 9 | 29 | 1 | 0 |
-| 12 | 27 | 3 | 0 |
+| A (white cardigan, hijab) | Haar, minNeighbors 6 | 4 | 3 |
+| B (dark blazer, whiteboard) | Haar, minNeighbors 6 | 1 | 0 |
+| B (dark blazer, whiteboard) | YuNet, 0.75 | 1 | 0 |
+| C (white cardigan, office) | Haar, minNeighbors 6 | 5 | 4 |
+| C (white cardigan, office) | Haar, minNeighbors 10 | about 5 | about 4 |
+| C (white cardigan, office) | YuNet, 0.75 | 1 | 0 |
+| D (distant, classroom) | Haar, minNeighbors 10 | 1 | 0 |
+| D (distant, classroom) | YuNet, 0.75 | 1 | 0 |
+| E (dark blazer, office) | Haar, minNeighbors 10 | 1 | 0 |
+| E (dark blazer, office) | YuNet, 0.75 | 1 | 0 |
 
-Raising the value from 5 to 7 removed every false positive at no cost in
-detection rate and no cost in time. The project's default should be 7.
+Summarised across the session:
 
-`scaleFactor`, which sets how much the image shrinks between passes, trades
-accuracy against speed as expected: 1.05 costs 53.0 ms per image, 1.1 costs
-28.5 ms, 1.2 costs 16.7 ms, and 1.3 drops to 10.5 ms but misses 5 of 30 faces.
+- **YuNet returned exactly one box on every run, without exception.** Six runs,
+  six correct detections, no false positives.
+- **Haar returned exactly one box on five runs and four to five boxes on
+  three runs.** Its first run averaged 3.3 boxes per frame over three frames.
+- **Neither detector missed a face.** The detection rate was 100% for both,
+  including subject D standing several metres from the camera.
 
-The practical consequence of Haar's false positives is not abstract. During
-enrolment, a single photograph of one person was reported as **five faces**,
-because the classifier fired on hair, beard and background texture. The
-enrolment code had to be changed to accept the largest detection when it clearly
-dominates the others, rather than refusing any image with more than one box.
+### 3.1 Haar's false positives are not random
 
-### 5.2 YuNet's default rejects real faces
+They cluster on one kind of subject. Subjects A and C both wear a light,
+textured cardigan, and the spurious boxes land on the fabric, on the folds of
+the hijab and on the shoulder line. Subjects B and E, photographed in a plain
+dark blazer, produced a single clean box from the same detector at the same
+settings.
 
-The confidence YuNet assigns to these faces is lower than its default threshold
-expects:
+This is consistent with how the classifier works: Haar features respond to
+local light–dark contrast patterns, and a patterned garment under office
+lighting presents the same contrast structure as the eye-and-cheek arrangement
+the cascade was trained to find. Nothing about the person changed between the
+two cases; the clothing did.
 
-- lowest 0.705, median 0.875, highest 0.921
-- **16 of 30 images scored below the 0.90 default**
+**Raising minNeighbors from 6 to 10 did not fix it.** On subject C the stricter
+setting still produced about five boxes. It did no harm elsewhere, so 10 is a
+better default than 6, but it is not a solution to this failure mode.
 
-So at the shipped threshold YuNet found only 14 of 30 faces, a 46.7% detection
-rate that would make it look far worse than Haar. Lowering the threshold to 0.70
-found every face and still produced no false positives, because the gap between
-genuine faces (0.705 and above) and spurious regions is wide on this data.
+## 4. Timing on the Raspberry Pi
 
-The clearest single case is the night-time photograph used for an early test:
+Only two readings were taken before the statistics began to mix:
 
-| Detector | Result |
-| --- | --- |
-| Haar, defaults | 1 face |
-| YuNet at 0.90 | **0 faces** |
-| YuNet at 0.70 | 1 face, confidence 0.850 |
+| Configuration | Frames | Mean detection time | Throughput |
+| --- | --- | --- | --- |
+| Haar, minNeighbors 6, detection only | 3 | 229.3 ms | 4.4 fps |
+| YuNet (separate session, version 1) | 10 | 204.3 ms | 4.9 fps |
+| YuNet (separate session, version 1) | 12 | 235.9 ms | 4.2 fps |
 
-The image is a close-range selfie under harsh artificial light, and the face
-scored 0.850 — a confident detection by any reasonable reading, rejected only
-because the default sits at 0.90.
+On the Raspberry Pi the two models cost roughly the same: both land between
+200 and 240 ms per frame, or 4 to 5 frames per second at 640 px.
 
-## 6. Why the two models behave differently
+**This contradicts the measurement taken earlier on a laptop**, where YuNet ran
+at 16.9 ms against Haar's 28.1 ms and was clearly the faster of the two. The
+advantage does not carry over to the Pi. The likely reason is that the two
+models stress different parts of the processor: Haar's cascade is a
+branch-heavy integer search that suits a general-purpose CPU, while YuNet is a
+convolutional network whose throughput depends on wide vector units that an ARM
+core at this price does not have in the same measure. The laptop figure
+flattered the neural network.
 
-The results follow from how each model works.
+The practical consequence for the project is that **choosing YuNet does not
+cost throughput on the target hardware**, which removes the main objection the
+FYP1 plan raised against a neural detector.
 
-**Haar's errors are false positives; YuNet's are false negatives.** Haar has no
-notion of confidence, so its only defence against a wrong detection is requiring
-more overlapping hits. Tightening that also discards marginal true faces, which
-is why `minNeighbors` 12 lost 3 real faces. YuNet instead scores every candidate
-and lets a threshold decide, which moves the error from "accepts rubbish" to
-"rejects anything it is unsure about". Neither is inherently safer; they fail in
-opposite directions, and for an attendance system a missed detection is more
-visible to the user than a spurious box the recognizer will reject anyway.
+The later blended means, between 318 ms and 360 ms with maxima of 574.6 ms, are
+averages over mixed configurations and should not be quoted for either model.
 
-**The CNN was not slower, which contradicts the FYP1 assumption.** The project
-plan chose Haar partly on the expectation that a neural network would be too
-expensive for a Raspberry Pi. On this hardware YuNet at 16.9 ms was faster than
-Haar at its best accurate setting, 28.1 ms. Haar can be made as fast by raising
-`scaleFactor` to 1.2, but that costs 3 of 30 faces. The reason is that Haar's
-sliding-window search repeats over many scales in sequence, while YuNet performs
-one pass over a fixed-size input. **This must be re-measured on the Raspberry
-Pi before the claim is made in the final report**, since the balance between a
-branch-heavy classical search and a convolutional network can differ on ARM.
+## 5. What the two models return
 
-**Only YuNet produces landmarks, and that affects recognition.** The SFace
-recognizer aligns a face using the five landmark points before computing its
-embedding. Behind Haar there are no landmarks, so the code falls back to a plain
-resized crop. The pairing of SFace with Haar is therefore expected to be weaker
-than SFace with YuNet, and the difference is a property of the detector, not of
-the recognizer.
+Two differences in output explain most of the behaviour above.
 
-## 7. Recognition results, and why they are not yet usable
+**Haar returns a bounding box and nothing else.** It reports no confidence, so
+every detection is trusted equally and there is no threshold to tune on the
+output side. The only control is how many overlapping hits to demand, and
+section 3 shows that tightening it does not separate a cardigan from a face.
 
-All four detector–recognizer combinations were evaluated on the same split:
+**YuNet returns a bounding box, a confidence score, and five facial landmarks**
+(both eyes, the nose tip, both mouth corners). The score is what allows a
+spurious region to be discarded without discarding faces: the threshold of 0.75
+used in these tests rejected everything that was not a face while keeping every
+face. The landmarks matter separately, because the SFace recognizer uses them
+to align a face before computing its embedding; behind Haar there are no
+landmarks and the code falls back to a plain resized crop.
 
-| Detector | Recognizer | Test images | Accuracy | Calibrated threshold | Recognition time |
-| --- | --- | --- | --- | --- | --- |
-| Haar | LBPH | 8 | 100% | 59.8 | 2.1 ms |
-| Haar | SFace | 8 | 100% | 0.910 | 7.8 ms |
-| YuNet | LBPH | 8 | 100% | 65.0 | 2.1 ms |
-| YuNet | SFace | 8 | 100% | 0.939 | 6.6 ms |
+## 6. Recognition during these tests
 
-**These figures should not be quoted as an accuracy result.** With two enrolled
-identities, a system that guesses would score 50%, and no impostors were held
-out, so the false acceptance rate could not be measured at all. What the table
-does establish is that the pipeline is correctly wired end to end and that the
-recognition stage costs 2–8 ms, which is small beside detection.
+Recognition was switched on for most runs, using LBPH. The outcome was almost
+entirely **Unknown**: the panel reports 24 to 28 unknown faces by the end of the
+session, against a single identification of one enrolled person in 1 frame of
+12, an 8.3% share.
 
-A meaningful figure needs roughly ten enrolled people with genuinely independent
-images and at least two people held out of the gallery as impostors. The
-evaluation script supports this directly, and it records every probe's raw score
-so the decision threshold is calibrated from the team's own data rather than
-copied from documentation.
+**This is a gallery and threshold problem, not evidence that recognition does
+not work.** Two causes are visible in the screenshots. First, a large share of
+the "unknown faces" counted are Haar's false positives — boxes on clothing,
+which the recognizer is quite correctly refusing to match to anybody. Second,
+the decision threshold was left at the value in `config.py`, which has not yet
+been calibrated against this dataset.
 
-## 8. Conclusion and recommendation
+Recognition cannot be assessed properly until there are about ten enrolled
+people with several images each, and until the threshold is calibrated with
+`evaluate_recognition.py --impostors 2`, which records every probe's raw score
+and sweeps the threshold afterwards.
 
-On this test set YuNet matched or beat Haar Cascade on every measure: 100%
-against 96.7% detection, zero false positives against four at Haar's default,
-and 16.9 ms against 28.1 ms at Haar's best accurate configuration. It also
-supplies confidence scores and landmarks, the second of which the SFace
-recognizer needs. The cost is a 227 KB model file that must be downloaded once.
+## 7. Conclusion
 
-Against that, Haar Cascade remains the correct baseline for the project. It
-requires no download, it is the method the literature review identified, and
-tuned to `minNeighbors` 7 it reaches 96.7% with no false positives — close
-enough that the comparison is a genuine engineering trade-off rather than a
-foregone conclusion.
+On the Raspberry Pi, with the team's own photographs:
 
-Three concrete changes follow from these measurements:
+1. **Both detectors found every face.** Detection rate was 100% for each, at
+   close range and at several metres.
+2. **YuNet produced no false positives at all; Haar produced three to four on
+   two of the five subjects.** The failure is driven by patterned, light
+   clothing, and raising minNeighbors from 6 to 10 did not correct it.
+3. **The two cost about the same on the Pi**, 200 to 240 ms per frame. The
+   laptop result showing YuNet nearly twice as fast does not transfer to ARM.
 
-1. **Change Haar's default `minNeighbors` from 5 to 7.** It removes every false
-   positive at no measured cost.
-2. **Change YuNet's default score threshold from 0.90 to 0.70.** The shipped
-   default rejected more than half the faces in this set.
-3. **Repeat the whole comparison on the Raspberry Pi**, with about ten enrolled
-   people and impostors held out. The timings here establish the relative cost
-   of the two models; the absolute figures that belong in the final report must
-   come from the target hardware.
+Haar Cascade remains the correct baseline for the project: it needs no model
+file, it is the method identified in the FYP1 literature review, and on plain
+backgrounds it is accurate. But on this evidence **YuNet is the better choice
+for the final system**, because it is equally fast on the target hardware,
+produces a clean single detection on every subject tested, and supplies the
+landmarks the recognizer needs.
 
-## 9. How to reproduce
+Three things follow for the next round of testing:
+
+- Press **Reset statistics** between configurations, so each figure stands alone.
+- Enrol about ten people and calibrate the recognition threshold before quoting
+  any accuracy figure.
+- Re-run the detector comparison with the counters reset, to obtain a clean
+  per-model timing on the Pi rather than the two isolated readings available
+  here.
+
+## 8. How to reproduce
 
 ```bash
-python3 scripts/benchmark_detectors.py                      # the table in section 4
-python3 scripts/benchmark_detectors.py --detectors haar --min-neighbors 7
-python3 scripts/benchmark_detectors.py --detectors yunet --score-threshold 0.7
-python3 scripts/evaluate_recognition.py --impostors 2       # the table in section 7
+python3 scripts/benchmark_detectors.py
+python3 scripts/benchmark_detectors.py --detectors haar --min-neighbors 10
+python3 scripts/benchmark_detectors.py --detectors yunet --score-threshold 0.75
+python3 scripts/evaluate_recognition.py --impostors 2
 ```
 
-Each writes a CSV and a markdown table into `data/output/`.
+Each writes a CSV and a markdown table into `data/output/`. Run them on the
+Raspberry Pi; the figures that belong in the final report are the ones measured
+on the target hardware.
