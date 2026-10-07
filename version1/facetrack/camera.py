@@ -8,13 +8,36 @@ benchmark runs repeatable: both detectors see exactly the same frames.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import cv2
 import numpy as np
 
 from . import config
+
+
+def _call_with_timeout(func: Callable[[], None], timeout: float = 2.0) -> bool:
+    """Run a call that may never return, and give up on it after `timeout`.
+
+    picamera2's stop() waits on a result that never arrives once the camera
+    frontend has timed out, so calling it directly hangs the caller. Shutting
+    the server down then needs a second Ctrl+C. Running it on a daemon thread
+    means the process can still exit.
+    """
+    done = threading.Event()
+
+    def runner() -> None:
+        try:
+            func()
+        except Exception:
+            pass
+        finally:
+            done.set()
+
+    threading.Thread(target=runner, daemon=True).start()
+    return done.wait(timeout)
 
 # Quarter turns, for a camera that is not mounted upright.
 _ROTATIONS = {
@@ -168,17 +191,13 @@ class CameraSource:
     # ------------------------------------------------------------ teardown
     def release(self) -> None:
         if self._picam is not None:
-            # stop() and close() get their own try: after a frontend timeout
-            # stop() often raises, and if that skipped close() the camera would
-            # stay acquired and block every later run.
-            try:
-                self._picam.stop()
-            except Exception:
-                pass
-            try:
-                self._picam.close()
-            except Exception:
-                pass
+            # Both calls are given their own bounded attempt. After a frontend
+            # timeout stop() does not raise, it waits forever on a result that
+            # never arrives, which would hang whoever called release, including
+            # the server's own Ctrl+C shutdown.
+            if not _call_with_timeout(self._picam.stop):
+                print("warning: the camera did not stop cleanly, abandoning it")
+            _call_with_timeout(self._picam.close)
             self._picam = None
         if self._capture is not None:
             self._capture.release()
