@@ -88,12 +88,26 @@ class CameraSource:
     def _open_picamera(self) -> None:
         from picamera2 import Picamera2
 
-        self._picam = Picamera2()
-        cfg = self._picam.create_preview_configuration(
-            main={"size": (self.width, self.height), "format": "RGB888"}
-        )
-        self._picam.configure(cfg)
-        self._picam.start()
+        try:
+            self._picam = Picamera2()
+            cfg = self._picam.create_preview_configuration(
+                main={"size": (self.width, self.height), "format": "RGB888"}
+            )
+            self._picam.configure(cfg)
+            self._picam.start()
+        except Exception as exc:
+            # Hand the camera back before re-raising. Without this the device
+            # stays acquired and every later attempt fails with "Camera in
+            # Running state trying acquire()", which looks like a second fault
+            # but is only the wreckage of the first.
+            self.release()
+            raise RuntimeError(
+                f"could not start the Pi camera: {exc}\n"
+                "If this says the frontend timed out, the sensor is detected but "
+                "is not delivering frames. Reseat the ribbon cable at both ends, "
+                "check it is the right way round, and test with:\n"
+                "  rpicam-hello -t 2000 -n"
+            ) from exc
         self.kind = "picamera2"
 
     def _open_webcam(self, index: int) -> None:
@@ -154,8 +168,14 @@ class CameraSource:
     # ------------------------------------------------------------ teardown
     def release(self) -> None:
         if self._picam is not None:
+            # stop() and close() get their own try: after a frontend timeout
+            # stop() often raises, and if that skipped close() the camera would
+            # stay acquired and block every later run.
             try:
                 self._picam.stop()
+            except Exception:
+                pass
+            try:
                 self._picam.close()
             except Exception:
                 pass
