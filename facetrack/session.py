@@ -15,13 +15,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import cv2
-import numpy as np
-
 from . import config
 from .camera import CameraSource
 from .detectors import get_detector
 from .draw import AMBER, GREEN, RED, draw_banner, draw_detections
+from .framesource import FrameSource
 from .recognizers import default_model_path, get_recognizer
 from .utils import Stopwatch, split_person_dir
 
@@ -94,8 +92,6 @@ class Stats:
             "median_pipeline_ms": round(statistics.median(pipeline), 1) if pipeline else 0.0,
             "max_pipeline_ms": round(max(pipeline), 1) if pipeline else 0.0,
             "throughput_fps": round(1000 / mean_pipeline, 1) if mean_pipeline else 0.0,
-            # NFReq-3 in the FYP1 plan allows one second of processing per frame.
-            "meets_nfreq3": bool(pipeline) and mean_pipeline <= 1000,
             "unknown": unknown,
             "people": people,
             "elapsed_s": round(elapsed, 1),
@@ -116,7 +112,6 @@ class Stats:
             "Median pipeline (ms)": data["median_pipeline_ms"],
             "Max pipeline (ms)": data["max_pipeline_ms"],
             "Throughput (fps)": data["throughput_fps"],
-            "NFReq-3 (<=1000 ms)": "PASS" if data["meets_nfreq3"] else "FAIL",
             "Unknown faces": data["unknown"],
             "Identified person": "",
             "Student ID": "",
@@ -136,7 +131,6 @@ class Stats:
                 "Median pipeline (ms)": "",
                 "Max pipeline (ms)": "",
                 "Throughput (fps)": "",
-                "NFReq-3 (<=1000 ms)": "",
                 "Unknown faces": "",
                 "Identified person": person["name"],
                 "Student ID": person["id"],
@@ -146,16 +140,14 @@ class Stats:
 
 
 # ==================================================================== session
-class PipelineSession:
+class PipelineSession(FrameSource):
     """Owns the camera, the detector, the recognizer and the worker thread."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.stats = Stats()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
-        self._frame_lock = threading.Lock()
-        self._frame: Optional[np.ndarray] = None
-        self._frame_id = 0
         self.state = "idle"                 # idle | running | finished | error
         self.error: Optional[str] = None
         self.detector_name = "-"
@@ -164,6 +156,9 @@ class PipelineSession:
         self.detector_description = ""
         self._source_spec: Tuple[Optional[str], int, int] = (
             None, config.CAMERA_INDEX, config.CAMERA_ROTATION)
+        # Held so stop() can release the device even when the worker thread
+        # is blocked inside a capture that will never return.
+        self._camera: Optional[CameraSource] = None
 
     # ------------------------------------------------------------ lifecycle
     def start(self, source: Optional[str] = None, camera_index: int = config.CAMERA_INDEX,
@@ -179,6 +174,7 @@ class PipelineSession:
         # looping is on.
         self._source_spec = (source, camera_index, int(rotate))
         camera = self._open_camera()
+        self._camera = camera
 
         try:
             det = self._build_detector(detector, detector_kwargs)
@@ -233,8 +229,23 @@ class PipelineSession:
         self._stop.set()
         thread = self._thread
         if thread is not None and thread.is_alive():
-            thread.join(timeout=3.0)
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                # The worker is stuck inside a blocking capture. That happens
+                # when the camera stops delivering frames: the read never
+                # returns, so the worker never reaches its own cleanup and the
+                # device would stay acquired until the process exits, making
+                # every later start fail with "Camera in Running state".
+                # Releasing from here aborts the pending capture.
+                camera = self._camera
+                if camera is not None:
+                    try:
+                        camera.release()
+                    except Exception:
+                        pass
+                thread.join(timeout=2.0)
         self._thread = None
+        self._camera = None
         if self.state == "running":
             self.state = "idle"
 
@@ -247,6 +258,7 @@ class PipelineSession:
                     if loop and camera.kind in ("video", "images", "image"):
                         camera.release()
                         camera = self._open_camera()
+                        self._camera = camera
                         continue
                     self.state = "finished"
                     break
@@ -266,9 +278,7 @@ class PipelineSession:
                 self.stats.add(len(detections), detect_watch.ms,
                                detect_watch.ms + recog_watch.ms, label_pairs)
 
-                with self._frame_lock:
-                    self._frame = annotated
-                    self._frame_id += 1
+                self.publish(annotated)
 
                 if camera.kind in ("image", "images"):
                     # Still photographs do not need to be reprocessed at video rate.
@@ -311,33 +321,6 @@ class PipelineSession:
         return canvas, pairs
 
     # ---------------------------------------------------------------- output
-    def latest_frame(self) -> Optional[np.ndarray]:
-        with self._frame_lock:
-            return None if self._frame is None else self._frame.copy()
-
-    @property
-    def frame_id(self) -> int:
-        with self._frame_lock:
-            return self._frame_id
-
-    def latest_jpeg(self, quality: int = 80) -> Optional[bytes]:
-        frame = self.latest_frame()
-        if frame is None:
-            return None
-        ok, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        return buffer.tobytes() if ok else None
-
-    def save_snapshot(self) -> Optional[Path]:
-        frame = self.latest_frame()
-        if frame is None:
-            return None
-        config.ensure_dirs()
-        folder = config.OUTPUT_DIR / "snapshots"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"snapshot_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
-        cv2.imwrite(str(path), frame)
-        return path
-
     def status(self) -> Dict:
         return {
             "state": self.state,
