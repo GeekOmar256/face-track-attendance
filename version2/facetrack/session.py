@@ -156,6 +156,9 @@ class PipelineSession(FrameSource):
         self.detector_description = ""
         self._source_spec: Tuple[Optional[str], int, int] = (
             None, config.CAMERA_INDEX, config.CAMERA_ROTATION)
+        # Held so stop() can release the device even when the worker thread
+        # is blocked inside a capture that will never return.
+        self._camera: Optional[CameraSource] = None
 
     # ------------------------------------------------------------ lifecycle
     def start(self, source: Optional[str] = None, camera_index: int = config.CAMERA_INDEX,
@@ -171,6 +174,7 @@ class PipelineSession(FrameSource):
         # looping is on.
         self._source_spec = (source, camera_index, int(rotate))
         camera = self._open_camera()
+        self._camera = camera
 
         try:
             det = self._build_detector(detector, detector_kwargs)
@@ -225,8 +229,23 @@ class PipelineSession(FrameSource):
         self._stop.set()
         thread = self._thread
         if thread is not None and thread.is_alive():
-            thread.join(timeout=3.0)
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                # The worker is stuck inside a blocking capture. That happens
+                # when the camera stops delivering frames: the read never
+                # returns, so the worker never reaches its own cleanup and the
+                # device would stay acquired until the process exits, making
+                # every later start fail with "Camera in Running state".
+                # Releasing from here aborts the pending capture.
+                camera = self._camera
+                if camera is not None:
+                    try:
+                        camera.release()
+                    except Exception:
+                        pass
+                thread.join(timeout=2.0)
         self._thread = None
+        self._camera = None
         if self.state == "running":
             self.state = "idle"
 
@@ -239,6 +258,7 @@ class PipelineSession(FrameSource):
                     if loop and camera.kind in ("video", "images", "image"):
                         camera.release()
                         camera = self._open_camera()
+                        self._camera = camera
                         continue
                     self.state = "finished"
                     break

@@ -215,6 +215,9 @@ class EnrollmentSession(FrameSource):
         self.rejected_faces = 0
         self.folder: Optional[Path] = None
         self.details: Dict = {}
+        # Held so stop() can release the device even when the worker
+        # thread is blocked inside a capture that never returns.
+        self._camera = None
 
     # ------------------------------------------------------------ lifecycle
     def start(self, details: Dict, count: int = config.CAPTURE_DEFAULT_COUNT,
@@ -261,6 +264,7 @@ class EnrollmentSession(FrameSource):
                   CameraSource(width=config.FRAME_WIDTH, height=config.FRAME_HEIGHT,
                                camera_index=camera_index, rotate=rotate))
 
+        self._camera = camera
         self._thread = threading.Thread(
             target=self._run, args=(camera, det, blur_threshold, max(1, int(gap))),
             daemon=True)
@@ -270,8 +274,20 @@ class EnrollmentSession(FrameSource):
         self._stop.set()
         thread = self._thread
         if thread is not None and thread.is_alive():
-            thread.join(timeout=3.0)
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                # Stuck inside a capture that will never return, which happens
+                # when the camera stops delivering frames. Release from here so
+                # the device is not held until the process exits.
+                camera = self._camera
+                if camera is not None:
+                    try:
+                        camera.release()
+                    except Exception:
+                        pass
+                thread.join(timeout=2.0)
         self._thread = None
+        self._camera = None
         if self.state == "running":
             self.state = "done" if self.saved else "idle"
 
