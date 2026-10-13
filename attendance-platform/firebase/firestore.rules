@@ -1,0 +1,88 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function admin(device) {
+      return request.auth != null && request.auth.token.face_track_admin == true
+             && request.auth.token.face_track_device == device;
+    }
+    match /face_track_devices/{device} {
+      allow read: if admin(device);
+      allow write: if false;
+      match /commands/{command} {
+        allow read: if admin(device);
+        allow create: if admin(device)
+          && request.resource.data.keys().hasOnly(['action', 'payload', 'state', 'created', 'uid'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.state == 'pending'
+          && request.resource.data.created == request.time
+          && request.resource.data.action in ['start', 'stop', 'add_user', 'remove_user', 'settings', 'approve_account', 'reject_account'];
+        allow update, delete: if false;
+      }
+      match /{collection}/{document} {
+        allow read: if admin(device);
+        allow write: if false;
+      }
+    }
+
+    match /face_track_accounts/{uid} {
+      allow read: if request.auth != null && (request.auth.uid == uid || admin(resource.data.device_id));
+      allow create: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['uid', 'email', 'name', 'device_id', 'state', 'created'])
+        && request.resource.data.keys().hasAll(['uid', 'email', 'name', 'device_id', 'state', 'created'])
+        && request.resource.data.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 120
+        && request.resource.data.device_id == 'classroom-pi'
+        && request.resource.data.state == 'pending'
+        && request.resource.data.created == request.time;
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if request.auth.token.email.matches("firebase@flutterflow.io") && !(request.path[3] in ['face_track_devices', 'face_track_accounts']);
+    }
+
+    match /mode/{document} {
+      allow create: if true;
+      allow read: if true;
+      allow write: if true;
+      allow delete: if false;
+    }
+
+    match /teacher/{document} {
+      allow create: if true;
+      allow read: if true;
+      allow write: if true;
+      allow delete: if false;
+    }
+
+    match /student/{document} {
+      allow create: if true;
+      allow read: if true;
+      allow write: if true;
+      allow delete: if false;
+    }
+
+    match /attendance/{document} {
+      allow create: if true;
+      allow read: if true;
+      allow write: if true;
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      // This rule allows anyone with your database reference to view, edit,
+      // and delete all data in your database. It is useful for getting
+      // started, but it is configured to expire after 30 days because it
+      // leaves your app open to attackers. At that time, all client
+      // requests to your database will be denied.
+      //
+      // Make sure to write security rules for your app before that time, or
+      // else all client requests to your database will be denied until you
+      // update your rules.
+      allow read, write: if request.time < timestamp.date(2026, 6, 14);
+    }
+  }
+}

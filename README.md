@@ -3,11 +3,11 @@
 FYP2, Team 10, Kuwait College of Science and Technology.
 *Face Track: An Embedded Smart Attendance System Using Face Recognition.*
 
-An embedded attendance prototype: a Raspberry Pi 4 with a camera detects and
-recognises faces on the device itself, with no cloud and no internet.
+An embedded attendance system: a Raspberry Pi 4 with a camera detects and
+recognises faces on the device. Versions 1 and 2 operate locally; the attendance
+platform adds optional Firebase monitoring and remote admin controls.
 
-The project is kept as two versions side by side, so the two can be compared in
-the report.
+The project includes the two baseline versions and a complete attendance platform.
 
 | | [version1/](version1/) | [version2/](version2/) |
 | --- | --- | --- |
@@ -41,7 +41,35 @@ Everything in version 1, plus:
   opening a terminal.
 - **A light theme.**
 
-## Getting started
+## Attendance platform
+
+[attendance-platform/](attendance-platform/) contains the complete system:
+
+- Haar Cascade, YuNet and dlib detection, with LBPH, SFace and dlib identity recognition.
+- SQLite users, photos, sessions, attendance and detailed measurement history.
+- Enrollment from uploaded photos or a live camera preview with a separate capture button.
+- One attendance entry per person per run, with timestamps and face images.
+- Single-session and all-session Excel exports, printable reports and statistics CSV.
+- A local admin page and a responsive Firebase dashboard with live attendance updates.
+- Mobile Activate/Deactivate controls, settings, enrollment and account registration with admin approval.
+
+For a laptop:
+
+```bash
+cd attendance-platform
+python -m venv .venv
+# Activate the virtual environment for your operating system.
+python -m pip install -r requirements-desktop.txt
+python download_models.py
+python app.py
+```
+
+Read the [platform setup guide](attendance-platform/README.md) for Raspberry Pi
+Python 3.13, dlib installation and Firebase configuration. Server credentials and
+mobile admin passwords are never included. The Firebase web configuration is public
+configuration; access to attendance data is controlled by authentication and rules.
+
+## Getting started with versions 1 and 2
 
 Either version runs on its own. Pick one and work inside it:
 
