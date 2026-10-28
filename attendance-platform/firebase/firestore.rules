@@ -15,7 +15,8 @@ service cloud.firestore {
           && request.resource.data.uid == request.auth.uid
           && request.resource.data.state == 'pending'
           && request.resource.data.created == request.time
-          && request.resource.data.action in ['start', 'stop', 'add_user', 'remove_user', 'settings', 'approve_account', 'reject_account'];
+          && request.resource.data.payload is map
+          && request.resource.data.action in ['start', 'stop', 'sleep', 'wake', 'add_user', 'update_user', 'remove_user', 'settings', 'approve_account', 'reject_account'];
         allow update, delete: if false;
       }
       match /{collection}/{document} {

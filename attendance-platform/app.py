@@ -101,6 +101,16 @@ def create_app(data_dir=None):
         engine.remove_user(user_id)
         return jsonify(ok=True)
 
+    @app.patch("/api/users/<user_id>")
+    def update_user(user_id):
+        return jsonify(engine.update_user({**(request.get_json() or {}), "id": user_id}))
+
+    @app.post("/api/device/<action>")
+    def device_control(action):
+        if action not in ("sleep", "wake"):
+            raise ValueError("Unknown device action")
+        return jsonify(getattr(engine, action)())
+
     @app.get("/api/users/<user_id>/photo")
     def photo(user_id):
         images = store.query("SELECT image FROM photos WHERE user_id=? LIMIT 1", (user_id,))

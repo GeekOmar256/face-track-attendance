@@ -1,0 +1,4 @@
+# OpenCV, NumPy and Picamera2 must come from Raspberry Pi OS apt packages.
+# Install dlib through apt or build requirements-dlib.txt separately; see PI_DEPLOYMENT.md.
+-r requirements.txt
+-r requirements-firebase.txt

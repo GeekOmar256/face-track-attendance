@@ -1,4 +1,5 @@
-import importlib.util
+import logging
+import platform
 from functools import lru_cache
 from pathlib import Path
 
@@ -174,34 +175,95 @@ class Camera:
         self.capture = None
         self.picamera = None
         self.image = None
+        self.first_frame = None
+        self.selected = None
         self.rotation = settings["rotation"]
         if source and Path(source).suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
             self.image = decode(Path(source).read_bytes())
-        elif not source and settings["camera"] in ("auto", "pi") and importlib.util.find_spec("picamera2"):
-            from picamera2 import Picamera2
-            self.picamera = Picamera2(settings["camera_index"])
-            try:
-                self.picamera.configure(self.picamera.create_preview_configuration(
-                    main={"size": (640, 480), "format": "RGB888"}))
-                self.picamera.start()
-            except Exception:
-                self.picamera.close()
-                raise
-        else:
-            if settings["camera"] == "pi" and not source:
-                raise RuntimeError("Picamera2 unavailable; install the apt package using the system Python")
-            self.capture = cv2.VideoCapture(str(source) if source else settings["camera_index"])
+        elif source:
+            self.capture = cv2.VideoCapture(str(source))
             if not self.capture.isOpened():
                 self.close()
-                raise RuntimeError("Camera or video cannot be opened")
-            self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                raise RuntimeError("Video cannot be opened")
+        else:
+            self.open_device(settings)
+
+    @staticmethod
+    def usb_indexes():
+        if platform.system() != "Linux":
+            return list(range(4))
+        # Exclude Pi codec/ISP nodes; /dev/video0 alone does not imply a USB camera.
+        return sorted(int(node.name[5:]) for node in Path("/sys/class/video4linux").glob("video*")
+                      if node.name[5:].isdigit() and "/usb" in str(node.resolve()))
+
+    def open_device(self, settings):
+        mode, preferred = settings["camera"], settings["camera_index"]
+        failures = []
+        picamera_class = None
+        if mode in ("auto", "pi"):
+            try:
+                from picamera2 import Picamera2
+                picamera_class = Picamera2
+                cameras = Picamera2.global_camera_info()
+                indexes = ([preferred] if mode == "pi" else
+                           [camera.get("Num", position) for position, camera in enumerate(cameras)
+                            if "/usb" not in camera.get("Id", "")])
+                indexes.sort(key=lambda index: index != preferred)
+                for index in indexes:
+                    try:
+                        self.picamera = Picamera2(index)
+                        self.picamera.configure(self.picamera.create_preview_configuration(
+                            main={"size": (640, 480), "format": "RGB888"}))
+                        self.picamera.start()
+                        self.first_frame = self.pi_frame()
+                        if self.first_frame is None or not self.first_frame.size:
+                            raise RuntimeError("no frame received")
+                        self.selected = {"kind": "pi", "index": index}
+                        logging.getLogger(__name__).info("Camera connected: %s", self.selected)
+                        return
+                    except Exception as exc:
+                        failures.append(f"Pi {index}: {exc}")
+                        self.close()
+            except Exception as exc:
+                failures.append(f"Pi discovery: {exc}")
+        if mode == "pi":
+            if picamera_class is None:
+                failures.append("Install python3-picamera2 with apt and use a --system-site-packages venv")
+        else:
+            indexes = [preferred] if mode == "usb" else self.usb_indexes()
+            indexes.sort(key=lambda index: index != preferred)
+            for index in indexes:
+                try:
+                    backend = cv2.CAP_V4L2 if platform.system() == "Linux" else cv2.CAP_ANY
+                    self.capture = cv2.VideoCapture(index, backend)
+                    if not self.capture.isOpened():
+                        raise RuntimeError("cannot open capture device")
+                    self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    ok, self.first_frame = self.capture.read()
+                    if not ok or self.first_frame is None or not self.first_frame.size:
+                        raise RuntimeError("opened but returned no frame")
+                    self.selected = {"kind": "usb", "index": index}
+                    logging.getLogger(__name__).info("Camera connected: %s", self.selected)
+                    return
+                except Exception as exc:
+                    failures.append(f"USB {index}: {exc}")
+                    self.close()
+        raise RuntimeError("No working camera found. " + ("; ".join(failures) or "No capture devices discovered.")
+                           + " Stop other camera programs; run camera_diagnostic.py --no-preview for details.")
+
+    def pi_frame(self):
+        # A listed sensor can still fail to deliver frames. Do not wait forever.
+        job = self.picamera.capture_array(wait=False)
+        return self.picamera.wait(job, timeout=5)
 
     def read(self):
-        if self.image is not None:
+        if self.first_frame is not None:
+            frame, self.first_frame = self.first_frame, None
+        elif self.image is not None:
             frame, self.image = self.image, None
         elif self.picamera:
-            frame = self.picamera.capture_array()
+            frame = self.pi_frame()
         elif self.capture:
             ok, frame = self.capture.read()
             if not ok:
@@ -216,10 +278,18 @@ class Camera:
         return frame
 
     def close(self):
-        if self.picamera:
+        picamera, self.picamera = self.picamera, None
+        capture, self.capture = self.capture, None
+        self.first_frame = None
+        if picamera:
             try:
-                self.picamera.stop()
+                picamera.stop()
+            except Exception:
+                logging.getLogger(__name__).warning("Camera stop failed", exc_info=True)
             finally:
-                self.picamera.close()
-        if self.capture:
-            self.capture.release()
+                try:
+                    picamera.close()
+                except Exception:
+                    logging.getLogger(__name__).warning("Camera close failed", exc_info=True)
+        if capture:
+            capture.release()

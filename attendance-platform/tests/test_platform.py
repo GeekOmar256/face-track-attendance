@@ -289,6 +289,67 @@ class PlatformTests(unittest.TestCase):
             self.assertTrue(FakeCamera.closed)
             self.assertFalse(self.engine.camera_preview_running())
 
+    def test_edit_student_keeps_photos_and_historical_attendance(self):
+        self.add_user()
+        self.create_session()
+        self.engine.process_frame("test", 1, self.image, DEFAULTS, FakeDetector(),
+                                  FakeIdentity("1001"), {"1001": self.person})
+        response = self.client.patch("/api/users/1001", headers=self.headers,
+                                     json={"name": "Updated Student", "class_name": "CE493"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.store.users()[0]["name"], "Updated Student")
+        self.assertEqual(self.store.users()[0]["photos"], 1)
+        self.assertEqual(self.store.attendance("test")[0]["name"], "First Student")
+        with self.assertRaises(ValueError):
+            self.engine.update_user({**self.person, "id": "missing"})
+
+    def test_sleep_is_persistent_standby_and_wake_allows_camera_operations(self):
+        with patch.object(self.engine, "stop", wraps=self.engine.stop) as stop:
+            result = self.engine.sleep()
+            stop.assert_called_once()
+        self.assertEqual(result, {"sleeping": True, "mode": "software_standby"})
+        self.assertTrue(self.engine.status()["sleeping"])
+        self.assertEqual(self.engine.status()["control_protocol"], 2)
+        from engine import Engine
+        restarted = Engine(self.store)
+        self.assertTrue(restarted.sleeping)
+        with self.assertRaisesRegex(ValueError, "Wake"):
+            self.engine.start_camera_preview()
+        with self.assertRaisesRegex(ValueError, "Wake"):
+            self.engine.start({})
+        with self.assertRaisesRegex(ValueError, "Wake"):
+            self.engine.add_user(self.person, [], captured=True)
+        self.engine.wake()
+        self.assertFalse(self.engine.sleeping)
+        self.assertEqual(self.store.query("SELECT sleeping FROM device_state")[0]["sleeping"], 0)
+
+    def test_sleep_requires_camera_release_and_stopped_processing(self):
+        with patch.object(self.engine, "stop"), patch.object(self.engine, "running", return_value=True):
+            with self.assertRaisesRegex(ValueError, "still stopping"):
+                self.engine.sleep()
+        self.assertFalse(self.engine.sleeping)
+
+    def test_device_controls_require_authentication_and_csrf(self):
+        anonymous = self.app.test_client()
+        self.assertEqual(anonymous.post("/api/device/sleep").status_code, 401)
+        self.assertEqual(self.client.post("/api/device/sleep").status_code, 403)
+        self.assertEqual(self.client.post("/api/device/sleep", headers=self.headers).status_code, 200)
+        self.assertEqual(self.client.post("/api/device/wake", headers=self.headers).status_code, 200)
+
+    def test_remote_teacher_commands_route_to_device_methods(self):
+        from datetime import datetime, timezone
+        from unittest.mock import Mock
+        bridge = CloudBridge(self.engine)
+        for action in ("sleep", "wake", "update_user"):
+            document = Mock()
+            document.id = "teacher-" + action
+            document.to_dict.return_value = {"action": action, "payload": self.person,
+                                            "created": datetime.now(timezone.utc)}
+            with patch.object(self.engine, action, return_value={"ok": True}) as method:
+                bridge._command(document)
+                method.assert_called_once_with(self.person) if action == "update_user" else method.assert_called_once_with()
+            self.assertEqual(document.reference.update.call_args.args[0]["state"], "done")
+
     def test_remote_command_is_not_replayed_after_response_failure(self):
         from datetime import datetime, timezone
         bridge = CloudBridge(self.engine)

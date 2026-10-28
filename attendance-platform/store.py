@@ -23,6 +23,9 @@ class Store:
                     id INTEGER PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
                     image BLOB NOT NULL, created TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS device_state (
+                    id INTEGER PRIMARY KEY CHECK(id=1), sleeping INTEGER NOT NULL CHECK(sleeping IN (0,1)),
+                    updated TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, class_name TEXT NOT NULL,
                     started TEXT NOT NULL, ended TEXT, state TEXT NOT NULL,

@@ -83,6 +83,12 @@ class CloudBridge:
                 result["result"] = self.engine.start(payload)
             elif action == "stop":
                 result["result"] = self.engine.stop()
+            elif action == "sleep":
+                result["result"] = self.engine.sleep()
+            elif action == "wake":
+                result["result"] = self.engine.wake()
+            elif action == "update_user":
+                result["result"] = self.engine.update_user(payload)
             elif action == "settings":
                 result["result"] = self.engine.save_settings(payload)
             elif action == "remove_user":

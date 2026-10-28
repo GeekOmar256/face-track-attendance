@@ -4,6 +4,16 @@ A separate application alongside versions 1 and 2. SQLite stores people, enrollm
 sessions, every processed frame, every recognition event, image evidence, attendance and
 a durable Firebase synchronization queue. No existing versions are changed.
 
+## Teacher web app
+
+The mobile-style teacher companion is hosted at
+https://face-track-bio-attendance.web.app/. It provides student profiles, independent
+model selection, live/one-shot sessions, attendance history, reports and Pi software
+standby controls. See [TEACHER_SETUP.md](TEACHER_SETUP.md) for the Pi update and setup.
+For a complete Pi installation, automatic camera discovery and boot startup, follow
+[PI_DEPLOYMENT.md](PI_DEPLOYMENT.md). The combined Pi dependencies are in
+`requirements-pi.txt`; `install_pi_service.py` installs the systemd service.
+
 ## Models and comparison
 
 Select a **detector** (Haar Cascade, YuNet, dlib HOG) and an **identity recognizer**
@@ -91,6 +101,37 @@ import/inference checks. On Windows a source build requires CMake and MSVC C++ b
 Haar/LBPH remains usable when dlib is unavailable; unavailable models are disabled.
 
 ## Local workflow
+
+### Standalone camera diagnostic
+
+Stop attendance, its enrollment preview and other camera programs first. This diagnostic
+does not use SQLite, recognition or Firebase. It discovers libcamera/Pi cameras and Linux
+USB capture devices (requires `sudo apt install v4l-utils`), checks OS/configuration/power
+and available kernel logs, and tests cameras sequentially. Windows webcam indexes 0–3 are
+only candidates until capture succeeds. A separate capture process lets a watchdog stop
+blocked camera reads, including the IMX219 frontend-timeout case.
+
+```bash
+python camera_diagnostic.py --list
+python camera_diagnostic.py --camera pi --host 0.0.0.0 --seconds 60
+```
+
+Open `http://PI_IP:8011` from a computer on the same trusted LAN for live preview, FPS and
+results. No desktop/X forwarding is required over SSH. The preview server is read-only
+but has no login: do not expose port 8011 to the internet. Default binding is localhost.
+After tests finish the server stays open for reviewing results; Ctrl+C closes it.
+
+```bash
+python camera_diagnostic.py --no-preview
+python camera_diagnostic.py --camera usb --index 0 --host 0.0.0.0
+```
+
+Each run saves `data/camera-diagnostic-TIMESTAMP/report.json`, worker logs, and a last-frame
+JPEG per tested camera. Failed Pi tests also attempt a bounded native `rpicam-still`
+capture when installed. Discovery and successful imports do not prove frames work.
+Diagnostic suggestions are hypotheses, not proof of a defective camera, cable or Pi.
+Kernel logs unavailable without extra permissions are reported, not silently treated as
+healthy. No automatic driver edits, privilege escalation or package changes are performed.
 
 1. Settings: choose detector, recognizer, camera (Auto/Pi/USB), rotation and thresholds.
 2. Add a user: ID, name and class. Browse multiple photos, or capture from the device

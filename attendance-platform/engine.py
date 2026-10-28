@@ -35,6 +35,8 @@ class Engine:
         self.camera_preview_frame = None
         self.camera_preview_jpeg = None
         self.camera_preview_error = None
+        state = self.store.query("SELECT sleeping FROM device_state WHERE id=1")
+        self.sleeping = bool(state and state[0]["sleeping"])
 
     def settings(self):
         rows = self.store.query("SELECT value FROM settings WHERE id=1")
@@ -73,17 +75,54 @@ class Engine:
     def running(self):
         return self.initializing or bool(self.thread and self.thread.is_alive())
 
+    @staticmethod
+    def user_details(details):
+        user_id = str(details.get("id", "")).strip()
+        name = str(details.get("name", "")).strip()
+        class_name = str(details.get("class_name", "")).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", user_id) or not name or not class_name:
+            raise ValueError("ID (letters/numbers/-/_), name, and class are required")
+        if len(name) > 120 or len(class_name) > 120:
+            raise ValueError("Name or class is too long")
+        return user_id, name, class_name
+
+    def update_user(self, details):
+        with self.lock:
+            if self.running():
+                raise ValueError("Stop attendance before editing a student")
+            user_id, name, class_name = self.user_details(details)
+            with self.store.connect() as db:
+                result = db.execute("UPDATE users SET name=?,class_name=? WHERE id=? AND active=1",
+                                    (name, class_name, user_id))
+                if not result.rowcount:
+                    raise ValueError("Student does not exist")
+                self.store.enqueue("users", user_id, {"id": user_id, "name": name,
+                                   "class_name": class_name, "active": True}, db)
+            return {"id": user_id, "name": name, "class_name": class_name}
+
+    def sleep(self):
+        with self.lock:
+            self.stop()
+            self.stop_camera_preview()
+            if self.running():
+                raise ValueError("Attendance is still stopping; retry Sleep shortly")
+            self.store.execute("INSERT OR REPLACE INTO device_state VALUES (1,1,?)", (now(),))
+            self.sleeping = True
+            return {"sleeping": True, "mode": "software_standby"}
+
+    def wake(self):
+        with self.lock:
+            self.store.execute("INSERT OR REPLACE INTO device_state VALUES (1,0,?)", (now(),))
+            self.sleeping = False
+            return {"sleeping": False}
+
     def add_user(self, details, images, captured=False):
         with self.lock:
             if self.running():
                 raise ValueError("Stop attendance before enrolling a person")
-            user_id = str(details.get("id", "")).strip()
-            name = str(details.get("name", "")).strip()
-            class_name = str(details.get("class_name", "")).strip()
-            if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", user_id) or not name or not class_name:
-                raise ValueError("ID (letters/numbers/-/_), name, and class are required")
-            if len(name) > 120 or len(class_name) > 120:
-                raise ValueError("Name or class is too long")
+            user_id, name, class_name = self.user_details(details)
+            if captured and self.sleeping:
+                raise ValueError("Wake the Pi before capturing a photograph")
             if not images and not captured:
                 raise ValueError("Select at least one photograph")
             settings = self.settings()
@@ -121,8 +160,10 @@ class Engine:
                            (user_id, name, class_name, now()))
                 for content in accepted:
                     db.execute("INSERT INTO photos(user_id,image,created) VALUES (?,?,?)", (user_id, content, now()))
+                photo_count = db.execute("SELECT COUNT(*) FROM photos WHERE user_id=?", (user_id,)).fetchone()[0]
                 self.store.enqueue("users", user_id, {"id": user_id, "name": name, "class_name": class_name,
-                                   "active": True, "thumbnail": base64.b64encode(jpeg(decode(accepted[0]), 160)).decode()}, db)
+                                   "active": True, "photos": photo_count,
+                                   "thumbnail": base64.b64encode(jpeg(decode(accepted[0]), 160)).decode()}, db)
             return {"id": user_id, "added_photos": len(accepted)}
 
     def remove_user(self, user_id):
@@ -139,6 +180,8 @@ class Engine:
 
     def start(self, request):
         with self.lock:
+            if self.sleeping:
+                raise ValueError("The Pi is in software standby. Wake it before starting attendance")
             if self.running():
                 raise ValueError("A session is already running")
             self.stop_camera_preview()
@@ -189,6 +232,8 @@ class Engine:
 
     def start_camera_preview(self):
         with self.lock:
+            if self.sleeping:
+                raise ValueError("Wake the Pi before opening the camera")
             if self.running():
                 raise ValueError("Stop attendance before opening the enrollment camera")
             if self.camera_preview_running():
@@ -334,5 +379,6 @@ class Engine:
 
     def status(self):
         return {"running": self.running(), "initializing": self.initializing, "session_id": self.session_id,
+                "sleeping": self.sleeping, "control_protocol": 2,
                 "error": self.error, "statistics": self.store.statistics(self.session_id) if self.session_id else {},
                 "capabilities": capabilities(), "camera_preview_running": self.camera_preview_running()}
