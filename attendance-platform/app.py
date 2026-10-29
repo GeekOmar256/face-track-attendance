@@ -231,17 +231,29 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
-    app = create_app()
+    from instance_lock import InstanceLock
+    guard = InstanceLock(ROOT / "data" / ".instance.lock")
     try:
-        app.extensions["cloud"].start()
-    except Exception as exc:
-        app.extensions["cloud"].error = str(exc)
-        print(f"Firebase unavailable: {exc}; local attendance remains available")
-    print(f"Local page: http://localhost:{args.port}")
-    print(f"Admin password: {app.config['ADMIN_PASSWORD']}", flush=True)
+        guard.acquire()
+    except RuntimeError as exc:
+        parser.exit(1, str(exc) + "\n")
+    app = None
     try:
+        # Acquire the lock before Store marks interrupted sessions or any bridge starts.
+        app = create_app()
+        try:
+            app.extensions["cloud"].start()
+        except Exception as exc:
+            app.extensions["cloud"].error = str(exc)
+            print(f"Firebase unavailable: {exc}; local attendance remains available")
+        print(f"Local page: http://localhost:{args.port}")
+        print(f"Admin password: {app.config['ADMIN_PASSWORD']}", flush=True)
         serve(app, host=args.host, port=args.port, threads=8)
     finally:
-        app.extensions["engine"].stop()
-        app.extensions["engine"].stop_camera_preview()
-        app.extensions["cloud"].stop_signal.set()
+        try:
+            if app:
+                app.extensions["cloud"].stop_signal.set()
+                app.extensions["engine"].stop()
+                app.extensions["engine"].stop_camera_preview()
+        finally:
+            guard.release()

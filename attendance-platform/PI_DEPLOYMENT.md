@@ -104,6 +104,31 @@ Local unit tests and mocked camera fallback tests do not verify physical Pi hard
 Record the actual target's Python/OpenCV/dlib versions, camera probe result, model
 capabilities, service boot state and Firebase heartbeat before reporting deployment done.
 
+## Status alternates between running and stopped
+
+Two attendance processes with the same Firebase device ID can overwrite each other's
+status and consume different commands. A common cause is running `python app.py` in
+an SSH terminal while `face-track.service` is also running. This release holds an OS
+lock before opening its database or Firebase bridge, so the second launch fails with
+an explanatory message. The OS releases the lock when the process exits.
+
+To clean up old app instances after updating, run as the normal Pi user:
+
+```bash
+cd ~/face-track-attendance
+git pull --ff-only origin version-2
+cd attendance-platform
+.venv/bin/python restart_pi_service.py
+systemctl status face-track --no-pager
+```
+
+The cleanup stops the service, terminates only this user's Python `app.py` processes
+whose script resolves to this exact installation, waits for them to exit, then starts
+the service. It does not remove student data or kill other Python applications.
+Afterward use `sudo systemctl restart face-track` to restart, rather than launching a
+second manual app. Each physical device/installation must have a distinct Firebase
+device ID; this file lock protects one installation, not two different computers.
+
 References: [Raspberry Pi camera software](https://www.raspberrypi.com/documentation/accessories/camera-software.html),
 [Picamera2 manual](https://datasheets.raspberrypi.com/camera/picamera2-manual.pdf),
 [systemd network startup guidance](https://github.com/systemd/systemd/blob/main/docs/NETWORK_ONLINE.md).

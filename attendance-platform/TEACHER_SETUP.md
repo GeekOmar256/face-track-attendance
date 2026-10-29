@@ -23,17 +23,23 @@ browser's Add to Home Screen option for an app-style shortcut.
 
 ## Update an existing Raspberry Pi installation
 
-This release needs the updated `app.py`, `cloud.py`, `engine.py` and `store.py` on
-the Pi. The website reports **Update required** if its device software is older.
-The ZIP supplied with this release contains these four files and this guide.
+This release needs the updated `app.py`, `cloud.py`, `engine.py`, `store.py`,
+`vision.py` and the new `instance_lock.py` on the Pi. The ZIP includes these modules,
+camera/service helpers and setup guides. Copy the new modules as well as replacing
+existing ones; `app.py` now imports `instance_lock.py` to prevent duplicate processes.
 
 1. Stop the Python platform with Ctrl+C (or stop its service if configured).
 2. Back up the existing attendance-platform folder, including `data/`, while stopped.
-3. Copy the four Python files from the ZIP into
-   `~/face-track-attendance/attendance-platform/`, replacing those four existing files.
+3. Copy all Python files from the ZIP into
+   `~/face-track-attendance/attendance-platform/`, replacing existing files and adding new ones.
    Keep all other modules, the existing virtual environment, models and data.
 4. Restart using the commands below. The new SQLite standby table is created
    automatically; existing students, photos and attendance are retained.
+
+If status alternates between running and stopped, two app processes may be active.
+After updating run `.venv/bin/python restart_pi_service.py` as the normal Pi user.
+It stops the service and this installation's extra app processes before starting
+only the service. Use service commands afterward, rather than launching a second app.
 
 ```bash
 cd ~/face-track-attendance/attendance-platform
