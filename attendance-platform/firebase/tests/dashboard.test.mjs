@@ -33,10 +33,10 @@ function dashboard() {
   window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
   window.HTMLDialogElement.prototype.close = function (value = '') { this.returnValue = value; this.removeAttribute('open'); this.dispatchEvent(new window.Event('close')); };
   vm.runInContext(code, dom.getInternalVMContext());
-  const emit = (path, data) => {
+  const emit = (path, data, metadata = {}) => {
     const snapshot = Array.isArray(data)
       ? { docs: data.map(row => ({ id: row.id, data: () => row })), size: data.length }
-      : { exists: () => !!data, data: () => data };
+      : { exists: () => !!data, data: () => data, metadata };
     for (const callback of [...listeners.get(path) || []]) callback(snapshot);
   };
   const root = 'face_track_devices/classroom-pi';
@@ -53,6 +53,24 @@ function dashboard() {
 }
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('viewer clock mismatch does not block live Pi controls, cached data stays offline', async t => {
+  const app = dashboard(); t.after(app.close);
+  await app.signIn();
+  const status = { running: false, control_protocol: 2 };
+  app.emit(app.root, { last_seen: '2020-01-01T10:00:00Z', status });
+  assert.equal(app.el('activate').disabled, true);
+  app.emit(app.root, { last_seen: '2020-01-01T10:00:02Z', status }, { fromCache: true });
+  assert.equal(app.el('activate').disabled, true);
+  app.emit(app.root, { last_seen: '2020-01-01T10:00:04Z', status });
+  assert.equal(app.el('headerConnection').textContent, 'Online');
+  assert.equal(app.el('activate').disabled, false);
+  assert.equal(app.el('sleep').disabled, false);
+  await app.el('logout').onclick(); await tick();
+  await app.signIn();
+  app.emit(app.root, { last_seen: '2020-01-01T10:00:04Z', status });
+  assert.equal(app.el('headerConnection').textContent, 'Offline');
+});
 
 test('teacher navigation, connectivity, attendance updates and sign-out clearing', async t => {
   const app = dashboard(); t.after(app.close);

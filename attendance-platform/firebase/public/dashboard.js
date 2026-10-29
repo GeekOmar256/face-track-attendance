@@ -1,7 +1,7 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js';
 import { getFirestore, collection, doc, onSnapshot, query, orderBy, limit, where, addDoc, setDoc, getDoc, getDocs, serverTimestamp, startAfter } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js';
-import { escapeText, asDate, deviceOnline, uniqueAttendance, csvText, filterRows } from './app-utils.mjs';
+import { escapeText, asDate, deviceOnline, observeHeartbeat, uniqueAttendance, csvText, filterRows } from './app-utils.mjs';
 
 const app = initializeApp(window.FIREBASE_CONFIG);
 const auth = getAuth(app);
@@ -16,6 +16,7 @@ let selected = '', followCurrent = true, settingsDirty = false, attendanceSubscr
 let generation = 0, editing = false, signup = false, registration = null, historyCursor = null, hasEarlier = false;
 let photoUrls = [], historyExtra = [], loadingHistory = false;
 let studentSaving = false;
+let heartbeat = null;
 const pending = new Map();
 const sending = new Set();
 const pageTitles = { home: 'Classroom overview', students: 'Your students', history: 'Session history', models: 'Face models', device: 'Your device' };
@@ -94,10 +95,11 @@ function watch(reference, callback) {
 }
 
 function busy(...actions) { return actions.some(action => sending.has(action)) || [...pending.values()].some(item => actions.includes(item.action)); }
-function canManage() { return deviceOnline(deviceData) && !deviceData?.status?.running && !deviceData?.status?.initializing; }
+function isDeviceOnline() { return deviceOnline(deviceData, Date.now(), heartbeat, performance.now()); }
+function canManage() { return isDeviceOnline() && !deviceData?.status?.running && !deviceData?.status?.initializing; }
 
 function renderDevice() {
-  const online = deviceOnline(deviceData), state = deviceData?.status || {};
+  const online = isDeviceOnline(), state = deviceData?.status || {};
   const connection = deviceData === null ? 'Connecting' : online ? state.sleeping ? 'Standby' : 'Online' : 'Offline';
   for (const id of ['headerConnection', 'deviceBadge', 'heroBadge']) {
     element(id).textContent = connection;
@@ -130,7 +132,7 @@ function renderDevice() {
 }
 
 async function sendCommand(action, payload = {}) {
-  if (!auth.currentUser || !deviceOnline(deviceData)) throw Error('Your Pi is offline. Connect the device and try again.');
+  if (!auth.currentUser || !isDeviceOnline()) throw Error('Your Pi is offline. Connect the device and try again.');
   if (['wake', 'sleep', 'update_user'].includes(action) && !(deviceData.status?.control_protocol >= 2)) throw Error('Update the Python platform on the Pi before using this control.');
   const owner = generation;
   if (busy(action)) throw Error('This request is already waiting for the Pi.');
@@ -327,7 +329,7 @@ function clearSubscriptions() {
 async function handleAuth(user) {
   const owner = ++generation; clearSubscriptions();
   selected = ''; users = []; sessions = []; attendance = []; historyExtra = []; historyCursor = null; hasEarlier = false; deviceData = null; settingsDirty = false;
-  studentSaving = false; sending.clear();
+  studentSaving = false; sending.clear(); heartbeat = null;
   renderStudents(); renderAttendance(); renderHistory(); element('evidenceBody').replaceChildren();
   element('requests').replaceChildren(); element('teacherEmail').textContent = ''; element('teacherName').textContent = 'Teacher';
   settings = { ...defaults }; populateSettings(); followCurrent = true;
@@ -351,7 +353,11 @@ async function handleAuth(user) {
     element('teacherName').textContent = name; element('teacherEmail').textContent = user.email;
     element('accountButton').textContent = name[0].toUpperCase(); element('greeting').textContent = `Hello, ${name === 'Teacher' ? 'teacher' : name.split(' ')[0]} ✦`;
     element('dashboard').classList.remove('hidden'); showPage('home'); renderStudents(); renderHistory(); renderAttendance();
-    subscriptions.push(watch(doc(database, 'face_track_devices', device), snapshot => { deviceData = snapshot.data() || {}; renderDevice(); }));
+    subscriptions.push(watch(doc(database, 'face_track_devices', device), snapshot => {
+      deviceData = snapshot.data() || {};
+      heartbeat = observeHeartbeat(heartbeat, deviceData, !!(snapshot.metadata?.fromCache || snapshot.metadata?.hasPendingWrites), performance.now());
+      renderDevice();
+    }));
     subscriptions.push(watch(collectionFor('users'), snapshot => { users = snapshot.docs.map(item => ({ ...item.data(), id: item.id })).filter(row => row.active).sort((first, second) => first.name.localeCompare(second.name)); renderStudents(); }));
     subscriptions.push(watch(query(collectionFor('sessions'), orderBy('started', 'desc'), limit(200)), snapshot => {
       const latest = snapshot.docs.map(item => ({ ...item.data(), id: item.id }));

@@ -6,9 +6,22 @@ export function asDate(value) {
   return value?.toDate ? value.toDate() : new Date(value || 0);
 }
 
-export function deviceOnline(data, now = Date.now()) {
-  const age = now - asDate(data?.last_seen).getTime();
-  return !!data?.last_seen && Number.isFinite(age) && age >= -10000 && age < 20000;
+export function observeHeartbeat(previous, data, fromCache, receivedAt) {
+  const stamp = asDate(data?.last_seen).getTime();
+  if (fromCache || !data?.last_seen || !Number.isFinite(stamp)) return previous;
+  if (previous?.stamp === stamp) return previous;
+  // Two advancing server snapshots prove liveness without trusting the viewer's clock.
+  return { stamp, at: previous && stamp > previous.stamp ? receivedAt : null };
+}
+
+export function deviceOnline(data, now = Date.now(), observation = null, monotonicNow = 0) {
+  const stamp = asDate(data?.last_seen).getTime();
+  const age = now - stamp;
+  const observedAge = monotonicNow - observation?.at;
+  const observedLive = observation?.stamp === stamp && observation.at !== null
+    && Number.isFinite(observedAge) && observedAge >= 0 && observedAge < 20000;
+  return !!data?.last_seen && Number.isFinite(age)
+    && ((age >= -10000 && age < 20000) || observedLive);
 }
 
 export function uniqueAttendance(rows) {

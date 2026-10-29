@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { escapeText, deviceOnline, uniqueAttendance, csvText, filterRows } from '../public/app-utils.mjs';
+import { escapeText, deviceOnline, observeHeartbeat, uniqueAttendance, csvText, filterRows } from '../public/app-utils.mjs';
 
 test('device connectivity rejects stale and implausibly future heartbeats', () => {
   const now = Date.now();
@@ -9,6 +9,29 @@ test('device connectivity rejects stale and implausibly future heartbeats', () =
   assert.equal(deviceOnline({ last_seen: new Date(now + 20000).toISOString() }, now), false);
   assert.equal(deviceOnline({ last_seen: 'invalid' }, now), false);
   assert.equal(deviceOnline(null, now), false);
+});
+
+test('advancing server heartbeats remain online despite a wrong viewer clock and expire', () => {
+  const first = { last_seen: '2026-10-29T18:00:00Z' };
+  const next = { last_seen: '2026-10-29T18:00:02Z' };
+  const wrongClock = Date.parse('2026-10-30T22:00:00Z');
+  let observed = observeHeartbeat(null, first, false, 100);
+  assert.equal(deviceOnline(first, wrongClock, observed, 100), false);
+  observed = observeHeartbeat(observed, next, false, 2100);
+  assert.equal(deviceOnline(next, wrongClock, observed, 2200), true);
+  assert.equal(deviceOnline(next, Date.parse('2026-10-20'), observed, 2200), true);
+  assert.equal(deviceOnline(next, wrongClock, observed, 22100), false);
+  assert.equal(observeHeartbeat(observed, next, false, 25000), observed);
+});
+
+test('cached, malformed and backwards heartbeats cannot renew observed liveness', () => {
+  const first = { last_seen: '2026-10-29T18:00:00Z' };
+  const next = { last_seen: '2026-10-29T18:00:02Z' };
+  const observed = observeHeartbeat(null, first, false, 100);
+  assert.equal(observeHeartbeat(observed, next, true, 200), observed);
+  assert.equal(observeHeartbeat(observed, { last_seen: 'invalid' }, false, 200), observed);
+  assert.equal(observeHeartbeat(observed, { last_seen: '2020-01-01' }, false, 200).at, null);
+  assert.equal(deviceOnline(first, Date.parse('2026-10-30'), observed, 200), false);
 });
 
 test('attendance keeps the earliest record per person within each session', () => {
